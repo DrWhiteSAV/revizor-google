@@ -1,11 +1,20 @@
-<div align="center">
+# RentRop (RR) — AI Platform & Ship Organization Builder
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+Full-Stack Node.js & React/TypeScript web application with PostgreSQL BD ProTalk (raport) database engine, Telegram Bot integration, AI Revisor & Raport assistance, and Sci-Fi Ship Organization Structure Builder.
 
-  <h1>Built with AI Studio</h2>
+## Tech Stack
+- **Frontend:** React 19, TypeScript, Tailwind CSS, Motion, Lucide Icons, Zustand
+- **Backend:** Node.js, Express, PostgreSQL BD ProTalk (raport), Node-Cron
+- **AI Engine:** Google Gemini API & Neural Assist Engine
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+## Getting Started
+```bash
+npm install
+npm run dev
+```
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
-
-</div>
+## Production Build
+```bash
+npm run build
+npm start
+```

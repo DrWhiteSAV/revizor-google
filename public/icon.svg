@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <radialGradient id="rrBg" cx="50%" cy="50%" r="65%">
+      <stop offset="0%" stop-color="#261404" />
+      <stop offset="100%" stop-color="#140A01" />
+    </radialGradient>
+    <linearGradient id="rrGold" x1="12%" y1="15%" x2="88%" y2="85%">
+      <stop offset="0%" stop-color="#F4EE8E" />
+      <stop offset="52%" stop-color="#E7C768" />
+      <stop offset="100%" stop-color="#C88A2E" />
+    </linearGradient>
+    <mask id="rrEmblemMask">
+      <rect width="128" height="128" fill="black" />
+      <!-- Back/outer planet halo + soft shoulder flares -->
+      <circle cx="64" cy="64" r="24.5" fill="white" />
+      <path d="M31 61 C38 59 40 55 43 49 L85 49 C88 55 90 59 97 61 L97 67 L31 67 Z" fill="white" />
+      <!-- Dark planet event horizon core -->
+      <circle cx="64" cy="64" r="19.2" fill="black" />
+      <!-- Dark cutout to keep upper inner ring gap crisp behind the ring -->
+      <ellipse cx="64" cy="68.5" rx="43" ry="10.2" fill="black" />
+      <!-- Re-apply lower inner planet halo edge only behind foreground ring -->
+      <path d="M40 76 A24.5 24.5 0 0 0 88 76 A20 20 0 0 1 40 76 Z" fill="white" />
+      <!-- Full outer elliptical ring -->
+      <ellipse cx="64" cy="69" rx="56" ry="15.2" fill="white" />
+      <!-- Inner ring negative gap -->
+      <ellipse cx="64" cy="68.2" rx="43" ry="10.2" fill="black" />
+      <!-- Upper dome re-applied cleanly over upper back ring edge -->
+      <path d="M35 59 C40 57 41 53 43 48 A23.5 23.5 0 0 1 85 48 C87 53 88 57 93 59 L84 69 A20 20 0 0 0 44 69 Z" fill="white" />
+      <!-- Dark planet core cutout above the foreground ring -->
+      <path d="M44.5 72 A19.8 19.8 0 1 1 83.5 72 Q64 78 44.5 72 Z" fill="black" />
+    </mask>
+  </defs>
+  <rect width="128" height="128" rx="26" fill="url(#rrBg)" />
+  <rect width="128" height="128" rx="26" fill="url(#rrGold)" mask="url(#rrEmblemMask)" />
+</svg>

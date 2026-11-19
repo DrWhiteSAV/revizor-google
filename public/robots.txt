@@ -1,0 +1,78 @@
+User-agent: *
+Allow: /
+Allow: /blog/
+Allow: /academy/
+Allow: /oferta
+Allow: /images/
+Allow: /uploads/
+Allow: /file/
+Allow: /llms.txt
+Allow: /llms-full.txt
+Allow: /favicon.ico
+Allow: /site.webmanifest
+Disallow: /cabinet/
+Disallow: /system-admin/
+Disallow: /api/
+Disallow: /payment/
+Disallow: /invite/
+Disallow: /auth
+
+User-agent: Yandex
+Allow: /
+Allow: /blog/
+Allow: /academy/
+Allow: /oferta
+Allow: /file/
+Allow: /favicon.ico
+Disallow: /cabinet/
+Disallow: /system-admin/
+Disallow: /api/
+Disallow: /payment/
+Disallow: /invite/
+Disallow: /auth
+Clean-param: utm_source&utm_medium&utm_campaign&utm_content&utm_term&yclid&gclid&fbclid&from&ssr /
+
+User-agent: YandexBot
+Allow: /
+
+User-agent: YandexFavicon
+Allow: /
+
+User-agent: YandexAdditional
+Allow: /
+
+User-agent: GPTBot
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: DeepSeekBot
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+User-agent: Meta-ExternalAgent
+Allow: /
+
+User-agent: MistralAI-User
+Allow: /
+
+Sitemap: https://ii-rr.ru/sitemap.xml
+Host: https://ii-rr.ru
