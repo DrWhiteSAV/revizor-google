@@ -20,6 +20,7 @@ import GlobalCascadeWidget from './components/raport/GlobalCascadeWidget';
 import { useCascadeCheckStore } from './store/useCascadeCheckStore';
 import { UserRole, UserProfile } from './types';
 import { Sparkles, Mail, Lock, UserCheck, Shield, User } from 'lucide-react';
+import { loadAndInitYandexMetrika, trackYandexMetrikaHit } from './utils/seo/yandexMetrika';
 
 export default function App() {
   // Preloader state
@@ -94,6 +95,23 @@ export default function App() {
     if (currentPath === '/auth') {
       setIsLoginModalOpen(true);
     }
+  }, [currentPath]);
+
+  // Initialize Yandex.Metrika counters & track SPA navigation hits
+  useEffect(() => {
+    let active = true;
+    loadAndInitYandexMetrika().then((ids) => {
+      if (active && ids.length > 0) {
+        trackYandexMetrikaHit(window.location.pathname + window.location.search);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    trackYandexMetrikaHit(currentPath + window.location.search);
   }, [currentPath]);
 
   // When navigating to another page while report check is running, forcibly send check to background

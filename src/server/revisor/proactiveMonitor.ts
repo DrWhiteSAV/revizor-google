@@ -1,4 +1,5 @@
 import { dispatchTaskTelegramNotification, rescheduleTaskCascade } from '../taskManager';
+import { sendWebPushToUser } from '../../../server/routes/push/service';
 import {
   sendTelegramRichMessage,
   isTelegramClientError,
@@ -493,16 +494,26 @@ export async function sendMorningAndEveningDigests(db: any) {
           [`dig_m_${Date.now()}_${eid}`, u.company_id || null, eid, localParts.dateKey, now.toISOString()]
         ).catch(() => {});
 
+        const morningTitle = '☀️ Утренний фокус ИИ-Ревизора на сегодня';
+        const morningBody = `Активных задач: ${empTasks.length}. Главные: ${sorted.slice(0, 2).map(t => t.title || t.taskTitle).join(', ')}.`;
         await db.run(
           `INSERT INTO notifications (id, userId, title, message, type, isRead, timestamp, actionUrl)
            VALUES (?, ?, ?, ?, 'task_digest', 0, CURRENT_TIMESTAMP, '/cabinet/revisor')`,
           [
             `notif_mb_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
             eid,
-            '☀️ Утренний фокус ИИ-Ревизора на сегодня',
-            `Активных задач: ${empTasks.length}. Главные: ${sorted.slice(0, 2).map(t => t.title || t.taskTitle).join(', ')}.`
+            morningTitle,
+            morningBody
           ]
         ).catch(() => {});
+
+        sendWebPushToUser(db, String(eid), {
+          title: morningTitle,
+          body: morningBody,
+          url: '/cabinet/revisor',
+          tag: `revisor-morning-${eid}-${localParts.dateKey}`,
+          category: 'tasks'
+        }).catch(() => {});
 
         if (u.telegram_id) {
           const morningBuilt = buildMorningBriefRichPayload({
@@ -557,16 +568,25 @@ export async function sendMorningAndEveningDigests(db: any) {
         ).catch(() => {});
 
         const msg = `Активных задач: ${compTasks.length}, в зоне повышенного риска: ${highRisk.length}, с отмеченными затруднениями: ${stuckTasks.length}.`;
+        const eveningTitle = '🌙 Вечерний радар руководителя (ИИ-Ревизор)';
         await db.run(
           `INSERT INTO notifications (id, userId, title, message, type, isRead, timestamp, actionUrl)
            VALUES (?, ?, ?, ?, 'task_digest', 0, CURRENT_TIMESTAMP, '/cabinet/revisor/doctor')`,
           [
             `notif_eb_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
             director.id,
-            '🌙 Вечерний радар руководителя (ИИ-Ревизор)',
+            eveningTitle,
             msg
           ]
         ).catch(() => {});
+
+        sendWebPushToUser(db, String(director.id), {
+          title: eveningTitle,
+          body: msg,
+          url: '/cabinet/revisor/doctor',
+          tag: `revisor-evening-${compId}-${localParts.dateKey}`,
+          category: 'tasks'
+        }).catch(() => {});
 
         if (director.telegram_id) {
           const radarBuilt = buildEveningRadarRichPayload({

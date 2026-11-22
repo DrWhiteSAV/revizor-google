@@ -620,24 +620,39 @@ export function buildEveningRadarRichPayload(opts: {
 
 /**
  * 5. Daily Report Cron Reminders (-15m / Deadline) & Overdue List (+15m)
+ *    Supports merged multiple templates in a single compact Telegram message.
  */
 export function buildCronReportAlertRichPayload(opts: {
   kind: "reminder" | "deadline" | "overdue_list";
   templateTitle: string;
+  templateTitles?: string[];
   deadlineTime: string;
   timezone: string;
   employeeName?: string;
   reminderMessage?: string;
-  unsubmittedEmployees?: Array<{ name: string; profileUrl: string; tgLabel: string }>;
+  unsubmittedEmployees?: Array<{ name: string; profileUrl: string; tgLabel: string; missingReportsText?: string }>;
   actionUrl: string;
+  actionButtons?: Array<{ text: string; url: string }>;
 }): BuiltRichPayload {
+  const uniqueTemplates = Array.from(
+    new Set(
+      (opts.templateTitles && opts.templateTitles.length > 0 ? opts.templateTitles : [opts.templateTitle])
+        .map((t) => cleanStr(t))
+        .filter(Boolean)
+    )
+  );
+  const templateSummary = uniqueTemplates.length > 1 ? uniqueTemplates.map((t, i) => `${i + 1}) ${t}`).join("; ") : (uniqueTemplates[0] || "Рапорт");
+
   if (opts.kind === "overdue_list") {
     const emps = opts.unsubmittedEmployees || [];
+    const hasPerEmployeeReports = emps.some((e) => Boolean(cleanStr(e.missingReportsText)));
     const blocks: InputRichBlock[] = [
       {
         type: "heading",
         size: 1,
-        text: "⚠️ Сотрудники, не сдавшие отчет (+15 мин после дедлайна)"
+        text: uniqueTemplates.length > 1
+          ? "⚠️ Сотрудники, не сдавшие отчеты (+15 мин после дедлайна)"
+          : "⚠️ Сотрудники, не сдавшие отчет (+15 мин после дедлайна)"
       },
       {
         type: "table",
@@ -646,7 +661,7 @@ export function buildCronReportAlertRichPayload(opts: {
         is_striped: true,
         cells: [
           [cell("Параметр", true), cell("Значение", true)],
-          [cell("Отчет"), cell(cleanStr(opts.templateTitle))],
+          [cell(uniqueTemplates.length > 1 ? "Отчеты" : "Отчет"), cell(templateSummary)],
           [cell("Дедлайн"), cell(`${cleanStr(opts.deadlineTime)} (${cleanStr(opts.timezone)})`)],
           [cell("Не сдали"), cell(`${emps.length} чел.`)]
         ]
@@ -660,10 +675,19 @@ export function buildCronReportAlertRichPayload(opts: {
         is_compact: true,
         is_bordered: true,
         is_striped: true,
-        cells: [
-          [cell("Сотрудник", true), cell("Telegram", true)],
-          ...emps.slice(0, 15).map((e) => [cell(cleanStr(e.name)), cell(cleanStr(e.tgLabel))])
-        ]
+        cells: hasPerEmployeeReports
+          ? [
+              [cell("Сотрудник", true), cell("Не сданные отчеты", true), cell("Telegram", true)],
+              ...emps.slice(0, 20).map((e) => [
+                cell(cleanStr(e.name)),
+                cell(cleanStr(e.missingReportsText) || templateSummary),
+                cell(cleanStr(e.tgLabel))
+              ])
+            ]
+          : [
+              [cell("Сотрудник", true), cell("Telegram", true)],
+              ...emps.slice(0, 20).map((e) => [cell(cleanStr(e.name)), cell(cleanStr(e.tgLabel))])
+            ]
       });
     }
 
@@ -684,7 +708,9 @@ export function buildCronReportAlertRichPayload(opts: {
     {
       type: "heading",
       size: 1,
-      text: isDeadline ? "🔔 Дедлайн сдачи отчета!" : "🔔 Напоминание о рапорте (-15 минут)"
+      text: isDeadline
+        ? (uniqueTemplates.length > 1 ? "🔔 Дедлайн сдачи отчетов!" : "🔔 Дедлайн сдачи отчета!")
+        : (uniqueTemplates.length > 1 ? "🔔 Напоминание о рапортах (-15 минут)" : "🔔 Напоминание о рапорте (-15 минут)")
     },
     {
       type: "table",
@@ -692,7 +718,7 @@ export function buildCronReportAlertRichPayload(opts: {
       is_bordered: true,
       is_striped: true,
       cells: [
-        [cell("Отчет", true), cell(cleanStr(opts.templateTitle), true)],
+        [cell(uniqueTemplates.length > 1 ? "Отчеты" : "Отчет", true), cell(templateSummary, true)],
         [cell("Сотрудник"), cell(cleanStr(opts.employeeName || "Сотрудник"))],
         [cell("Время сдачи"), cell(`${cleanStr(opts.deadlineTime)} (${cleanStr(opts.timezone)})`)]
       ]
@@ -705,13 +731,20 @@ export function buildCronReportAlertRichPayload(opts: {
       credit: "💡 Комментарий к сдаче"
     });
   }
-  const btns: RichMessageButton[] = [
-    {
-      text: "📝 Заполнить отчет",
-      url: opts.actionUrl,
-      style: isDeadline ? "danger" : "primary"
-    }
-  ];
+  const btns: RichMessageButton[] =
+    opts.actionButtons && opts.actionButtons.length > 1
+      ? opts.actionButtons.slice(0, 3).map((b) => ({
+          text: b.text,
+          url: b.url,
+          style: isDeadline ? "danger" : "primary"
+        }))
+      : [
+          {
+            text: "📝 Заполнить отчет",
+            url: opts.actionUrl,
+            style: isDeadline ? "danger" : "primary"
+          }
+        ];
   blocks.push({ type: "buttons", align: "left", buttons: btns });
 
   return {

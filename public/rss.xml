@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>ИИ Ревизор &amp; ИИ Рапорт — Блог и Академия</title>
+    <link>https://ii-rr.ru/</link>
+    <atom:link href="https://ii-rr.ru/rss.xml" rel="self" type="application/rss+xml"/>
+    <description>Экспертные статьи, руководства и регламенты по голосовым отчетам в Telegram, расчету мотивации и KPI, аудиту смет КС-2/КС-3 и ИИ-контролю проектов.</description>
+    <language>ru</language>
+    <lastBuildDate>Fri, 20 Nov 2026 12:00:00 +0000</lastBuildDate>
+    <image>
+      <url>https://ii-rr.ru/favicon-192.png</url>
+      <title>ИИ Ревизор &amp; ИИ Рапорт</title>
+      <link>https://ii-rr.ru/</link>
+    </image>
+    <item>
+      <title>Автоматизация управления проектами и контроль по чек-листам с ИИ Ревизор</title>
+      <link>https://ii-rr.ru/blog/avtomatizaciya-upravleniya-proektami-ii-revisor</link>
+      <guid isPermaLink="true">https://ii-rr.ru/blog/avtomatizaciya-upravleniya-proektami-ii-revisor</guid>
+      <pubDate>Fri, 20 Nov 2026 09:00:00 +0000</pubDate>
+      <category>ИИ Ревизор</category>
+      <description>Декомпозиция целей на спринты и задачи, чек-листы приемки, компьютерное зрение для фотоотчетов и контроль сроков.</description>
+      <enclosure url="https://ii-rr.ru/og-banner.png" type="image/png" length="0"/>
+    </item>
+    <item>
+      <title>Голосовой ввод сменных отчетов сотрудников за 2 минуты в ИИ Рапорт</title>
+      <link>https://ii-rr.ru/blog/golosovoj-vvod-otchetov-ii-raport</link>
+      <guid isPermaLink="true">https://ii-rr.ru/blog/golosovoj-vvod-otchetov-ii-raport</guid>
+      <pubDate>Fri, 20 Nov 2026 08:00:00 +0000</pubDate>
+      <category>ИИ Рапорт</category>
+      <description>Как перевести утренние и вечерние рапорты в Telegram и веб-кабинет с автоматическим расчетом KPI и оклада.</description>
+      <enclosure url="https://ii-rr.ru/og-banner.png" type="image/png" length="0"/>
+    </item>
+    <item>
+      <title>Академия ИИ Ревизор &amp; ИИ Рапорт: инструкции и регламенты для команды</title>
+      <link>https://ii-rr.ru/academy</link>
+      <guid isPermaLink="true">https://ii-rr.ru/academy</guid>
+      <pubDate>Fri, 20 Nov 2026 07:00:00 +0000</pubDate>
+      <category>Академия</category>
+      <description>Пошаговые инструкции по графикам смен, системе мотивации, проверке рапортов, PWA и Telegram-уведомлениям.</description>
+      <enclosure url="https://ii-rr.ru/og-banner.png" type="image/png" length="0"/>
+    </item>
+  </channel>
+</rss>

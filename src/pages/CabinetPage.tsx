@@ -46,6 +46,11 @@ import { CabinetCopilot } from '../components/copilot/CabinetCopilot';
 import { OnboardingModal, OnboardingHeaderTrigger } from '../components/onboarding/OnboardingModal';
 import { PWAInstallBanner } from '../components/pwa/PWAInstallBanner';
 import { OfflineIndicator } from '../components/pwa/PWAInstallProfileButton';
+import { CommsWorkspace } from '../components/comms/CommsWorkspace';
+import { VideoCallModal } from '../components/comms/VideoCallModal';
+import { CommsGlobalOverlay } from '../components/comms/CommsGlobalOverlay';
+import { useCommsSocket } from '../hooks/useCommsSocket';
+import type { CommsColleague, IncomingCallInvite } from '../types/comms';
 
 interface CabinetPageProps {
   currentPath: string;
@@ -267,6 +272,8 @@ const getTabIcon = (id: string) => {
       return <Users size={18} className="text-emerald-400" />;
     case 'employee_schedule':
       return <Clock size={18} className="text-emerald-400" />;
+    case 'comms':
+      return <MessageSquare size={18} className="text-emerald-400" />;
       
 
       
@@ -324,6 +331,7 @@ const tabNamesMap: Record<string, string> = {
   departments: 'Органиграмма',
   employees: 'Сотрудники',
   employee_schedule: 'Графики Работы',
+  comms: 'Чаты и Созвоны',
 
   profile_info: 'Мой Профиль',
   profile: 'Мой Профиль',
@@ -385,6 +393,7 @@ export const tabToPathMap: Record<string, string> = {
   departments: '/cabinet/company/map',
   employees: '/cabinet/company/employers',
   employee_schedule: '/cabinet/company/schedule',
+  comms: '/cabinet/comms',
 
 
 
@@ -454,6 +463,8 @@ export const pathToTabMap: Record<string, string> = {
   '/cabinet/raport/schedules': 'employee_schedule',
   '/cabinet/raport/schedule': 'employee_schedule',
   '/cabinet/raport/schedules_builder': 'employee_schedule',
+  '/cabinet/comms': 'comms',
+  '/cabinet/video': 'comms',
 
 
 
@@ -480,6 +491,9 @@ export const getTabFromPath = (path?: string): string => {
     if (sub && sub !== 'notifications') {
       return 'profile_view_only';
     }
+  }
+  if (cleanPath.startsWith('/cabinet/comms') || cleanPath.startsWith('/cabinet/video')) {
+    return 'comms';
   }
   if (cleanPath.startsWith('/cabinet/company/schedule') || cleanPath.startsWith('/cabinet/company/schedules') || cleanPath.startsWith('/cabinet/schedule') || cleanPath.startsWith('/cabinet/schedules')) {
     return 'employee_schedule';
@@ -553,7 +567,7 @@ export default function CabinetPage({
     const initTab = getTabFromPath(currentPath);
     if (initTab.startsWith('revisor')) return 'revisor';
     if (initTab.startsWith('raport') || initTab === 'fill_report') return 'raport';
-    if (['departments', 'employees', 'employee_schedule'].includes(initTab)) return 'company';
+    if (['departments', 'employees', 'employee_schedule', 'comms'].includes(initTab)) return 'company';
     if (initTab.startsWith('admin') || ['system_admin', 'crm', 'blog_posts'].includes(initTab)) return 'admin';
     return 'profile';
   });
@@ -564,7 +578,7 @@ export default function CabinetPage({
       setSelectedCategoryCollapsed('revisor');
     } else if (tab.startsWith('raport') || tab === 'fill_report') {
       setSelectedCategoryCollapsed('raport');
-    } else if (['departments', 'employees', 'employee_schedule'].includes(tab)) {
+    } else if (['departments', 'employees', 'employee_schedule', 'comms'].includes(tab)) {
       setSelectedCategoryCollapsed('company');
     } else if (['profile', 'tariffs', 'recharge', 'profile_notifications', 'referrals', 'profile_tariff', 'profile_info', 'profile_prompts', 'profile_referral', 'tariff', 'billing'].includes(tab)) {
       setSelectedCategoryCollapsed('profile');
@@ -618,6 +632,57 @@ export default function CabinetPage({
       setUserPosition(currentUser.position || '');
     }
   }, [currentUser]);
+
+  // Corporate Messenger & Video Call State + Deep Links (?chat= / ?room=)
+  const [activeVideoRoom, setActiveVideoRoom] = useState<{ roomId: string; title: string; chatId?: string | null } | null>(null);
+  const [commsColleagues, setCommsColleagues] = useState<CommsColleague[]>([]);
+  const [initialCommsChatId, setInitialCommsChatId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return new URLSearchParams(window.location.search).get('chat');
+  });
+
+  useCommsSocket({
+    userId: currentUser?.id,
+    companyId: currentUser?.company_id || currentUser?.director_id || currentUser?.id,
+    displayName: currentUser?.name,
+    avatarUrl: currentUser?.photo_url || currentUser?.avatarUrl
+  });
+
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+    const roomParam = params?.get('room');
+    const chatParam = params?.get('chat');
+    if (chatParam) setInitialCommsChatId(chatParam);
+
+    if (activeTab === 'comms' || roomParam || activeVideoRoom) {
+      if (commsColleagues.length === 0) {
+        void fetch(`/api/comms/overview?userId=${encodeURIComponent(currentUser.id)}`)
+          .then((r) => r.json())
+          .then((data) => {
+            if (data?.success && Array.isArray(data.colleagues)) {
+              setCommsColleagues(data.colleagues);
+            }
+          })
+          .catch(() => {});
+      }
+    }
+
+    if (roomParam) {
+      void fetch(`/api/comms/video/rooms/${encodeURIComponent(roomParam)}`)
+        .then((r) => r.json())
+        .then((d) => {
+          if (d?.success && d.room && d.room.isActive !== false) {
+            setActiveVideoRoom({
+              roomId: d.room.id,
+              title: d.room.title || 'Видеовстреча',
+              chatId: d.room.chatId || chatParam || null
+            });
+          }
+        })
+        .catch(() => {});
+    }
+  }, [currentUser?.id, activeTab, activeVideoRoom, commsColleagues.length]);
 
   // Auto-parse Telegram profile details on /cabinet entry
   useEffect(() => {
@@ -1214,13 +1279,13 @@ export default function CabinetPage({
         }
       }
 
-      // Sync Reports to PostgreSQL BD ProTalk database
+      // Sync Reports to PostgreSQL BD ProTalk database (silent sync: never re-trigger Telegram/Motivation DMs)
       if (updatedState.reports && Array.isArray(updatedState.reports)) {
         for (const rep of updatedState.reports) {
           fetch('/api/reports', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...rep, skipTelegram: true })
+            body: JSON.stringify({ ...rep, skipTelegram: true, skipMotivation: true, isSync: true })
           }).catch(err => console.error('Error syncing Report:', err));
         }
       }
@@ -1296,6 +1361,7 @@ export default function CabinetPage({
   ].filter(item => hasAccess(item.roles));
 
   const companyTabsFiltered = [
+    { id: 'comms', name: 'Чаты и Созвоны', desc: 'Мессенджер команды и видеовстречи', roles: [UserRole.ADMIN, UserRole.DIRECTOR, UserRole.MANAGER, UserRole.EMPLOYEE] },
     { id: 'departments', name: 'Карта Компании', desc: 'Карта компании и отделов', roles: [UserRole.ADMIN, UserRole.DIRECTOR, UserRole.MANAGER] },
     { id: 'employees', name: 'Сотрудники', desc: 'Управление командой и приглашения', roles: [UserRole.ADMIN, UserRole.DIRECTOR, UserRole.MANAGER] },
     { id: 'employee_schedule', name: 'Графики Работы', desc: 'Управление сменами и календарем', roles: [UserRole.ADMIN, UserRole.DIRECTOR, UserRole.MANAGER, UserRole.EMPLOYEE] }
@@ -1364,7 +1430,7 @@ export default function CabinetPage({
       
       {/* MOBILE CABINET HEADER */}
       <div 
-        className={`fixed top-0 left-0 right-0 h-14 z-40 lg:hidden backdrop-blur-md border-b flex items-center justify-between px-3 sm:px-4 transition-all duration-300 ${
+        className={`fixed top-0 left-0 right-0 h-14 z-40 lg:hidden backdrop-blur-md border-b flex items-center justify-between px-3 sm:px-4 w-full max-w-full overflow-hidden transition-all duration-300 ${
           theme === 'dark' 
             ? 'bg-[#140A01]/90 border-amber-500/25 text-white' 
             : 'bg-[#FFFBF5]/90 border-amber-800/25 text-amber-950 shadow-sm'
@@ -1379,47 +1445,43 @@ export default function CabinetPage({
           </div>
         )}
 
-        {/* Left Section: Logo & Name */}
-        <div 
+        {/* Left Section: Logo only */}
+        <button
+          type="button"
           onClick={() => onNavigate('/')}
-          className="flex items-center gap-2 relative z-10 cursor-pointer group min-w-0"
+          className="flex items-center justify-center relative z-10 cursor-pointer group shrink-0 p-1 rounded-xl"
+          title="ИИ Ревизор"
+          aria-label="На главную"
         >
           <img 
             src="/file/36/rr-logo.png" 
             alt="RR Logo" 
-            className="w-7 h-7 object-contain group-hover:rotate-12 transition-transform duration-300 drop-shadow-[0_0_8px_rgba(231,199,104,0.2)] shrink-0"
+            className="w-8 h-8 object-contain group-hover:rotate-12 transition-transform duration-300 drop-shadow-[0_0_8px_rgba(231,199,104,0.2)] shrink-0"
           />
-          <div className="min-w-0">
-            <h1 className={`text-sm font-extrabold leading-none font-sans truncate ${theme === 'dark' ? 'bg-gradient-to-r from-[#F4EE8E] to-[#D99E41] bg-clip-text text-transparent' : 'text-amber-950'}`}>
-              ИИ Ревизор
-            </h1>
-            <p className={`text-sm font-sans mt-0.5 font-semibold truncate ${theme === 'dark' ? 'text-amber-100/80' : 'text-amber-900'}`}>{activeTabName}</p>
-          </div>
-        </div>
+        </button>
 
-        {/* Right Section: Profile, Logout, Theme Toggle and Reminders */}
-        <div className="flex items-center gap-2.5 relative z-10">
+        {/* Right Section: Theme Toggle, Help, Notifications, Profile, Logout */}
+        <div className="flex items-center gap-2 sm:gap-2.5 relative z-10 shrink-0">
           {/* Theme Toggle (Mobile) */}
           <button
+            type="button"
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-            className={`p-1.5 rounded-lg border transition-all cursor-pointer flex items-center justify-center ${
+            className={`w-8 h-8 rounded-xl border transition-all cursor-pointer flex items-center justify-center shrink-0 ${
               theme === 'dark'
-                ? 'border-white/10 text-[#E7C768] hover:bg-zinc-800/60'
-                : 'border-zinc-300 text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100'
+                ? 'border-white/15 text-[#E7C768] hover:bg-zinc-800/60'
+                : 'border-amber-800/30 text-amber-950 hover:bg-amber-100/70'
             }`}
             title={theme === 'dark' ? "Включить светлую тему" : "Включить темную тему"}
             id="cabinet-theme-toggle-mobile"
           >
-            {theme === 'dark' ? <Sun size={14} className="text-[#E7C768]" /> : <Moon size={14} />}
+            {theme === 'dark' ? <Sun size={15} className="text-[#E7C768]" /> : <Moon size={15} />}
           </button>
-
-          {/* Onboarding Launch Tour Button (Mobile) */}
-          <OnboardingHeaderTrigger userId={currentUser?.id} theme={theme} compact={true} />
 
           {/* Academy Help Button (Mobile) */}
           <button
+            type="button"
             onClick={() => setIsAcademyHelpOpen(true)}
-            className={`p-1.5 rounded-lg border transition-all cursor-pointer flex items-center justify-center ${
+            className={`w-8 h-8 rounded-xl border transition-all cursor-pointer flex items-center justify-center shrink-0 ${
               theme === 'dark'
                 ? 'border-amber-400/50 text-[#F4EE8E] bg-amber-400/10 hover:bg-amber-400/20 shadow-[0_0_10px_rgba(244,238,142,0.15)]'
                 : 'border-amber-800/40 text-amber-950 bg-amber-100 hover:bg-amber-200'
@@ -1427,26 +1489,27 @@ export default function CabinetPage({
             title="Инструкция раздела (Академия)"
             id="cabinet-header-help-mobile"
           >
-            <HelpCircle size={14} />
+            <HelpCircle size={15} />
           </button>
 
           {/* Notifications Bell */}
           <button
+            type="button"
             onClick={() => {
               handleTabClick('profile_notifications');
               handleMarkAllNotificationsRead();
             }}
-            className={`relative p-1.5 rounded-lg border transition-all cursor-pointer flex items-center justify-center ${
+            className={`relative w-8 h-8 rounded-xl border transition-all cursor-pointer flex items-center justify-center shrink-0 ${
               theme === 'dark'
-                ? 'border-amber-500/30 text-[#F4EE8E] hover:text-[#F4EE8E] hover:bg-amber-400/10'
-                : 'border-zinc-300 text-zinc-800 hover:text-zinc-950 hover:bg-zinc-100'
+                ? 'border-amber-500/35 text-[#F4EE8E] hover:bg-amber-400/10'
+                : 'border-amber-800/35 text-amber-950 hover:bg-amber-100/70'
             }`}
             title="Уведомления"
             id="cabinet-header-bell-mobile"
           >
-            <Bell size={14} className={theme === 'dark' ? 'text-[#F4EE8E]' : ''} />
+            <Bell size={15} className={theme === 'dark' ? 'text-[#F4EE8E]' : ''} />
             {unreadNotificationsCount > 0 && (
-              <span className="absolute -top-1 -right-1 bg-red-500 text-white font-extrabold font-mono text-[7px] min-w-[12px] h-[12px] px-0.5 rounded-full flex items-center justify-center animate-pulse">
+              <span className="absolute -top-1 -right-1 bg-red-500 text-white font-extrabold font-mono text-[8px] min-w-[14px] h-[14px] px-0.5 rounded-full flex items-center justify-center animate-pulse">
                 {unreadNotificationsCount}
               </span>
             )}
@@ -1454,11 +1517,12 @@ export default function CabinetPage({
 
           {/* User profile capsule */}
           <button 
+            type="button"
             onClick={() => handleTabClick('profile')}
-            className={`flex items-center gap-1.5 p-1 rounded-xl border transition-all cursor-pointer ${
+            className={`w-8 h-8 flex items-center justify-center p-0.5 rounded-xl border transition-all cursor-pointer shrink-0 ${
               theme === 'dark'
-                ? 'bg-transparent border-amber-500/30 text-[#F4EE8E] hover:bg-amber-400/10'
-                : 'bg-transparent border-amber-400/50 text-amber-950 hover:bg-amber-400/10'
+                ? 'bg-transparent border-amber-500/35 text-[#F4EE8E] hover:bg-amber-400/10'
+                : 'bg-transparent border-amber-800/35 text-amber-950 hover:bg-amber-100/70'
             }`}
             title="Профиль"
           >
@@ -1479,16 +1543,17 @@ export default function CabinetPage({
 
           {onLogout && (
             <button
+              type="button"
               onClick={onLogout}
-              className={`p-1.5 rounded-lg border transition-all cursor-pointer ${
+              className={`w-8 h-8 rounded-xl border transition-all cursor-pointer flex items-center justify-center shrink-0 ${
                 theme === 'dark'
-                  ? 'border-white/10 text-slate-400 hover:text-red-300 hover:bg-red-500/10'
-                  : 'border-zinc-300 text-zinc-500 hover:text-red-600 hover:bg-red-50'
+                  ? 'border-white/15 text-slate-300 hover:text-red-300 hover:bg-red-500/10'
+                  : 'border-amber-800/30 text-amber-950 hover:text-red-700 hover:bg-red-50'
               }`}
               title="Выйти из личного кабинета"
               id="cabinet-header-logout-mobile"
             >
-              <LogOut size={14} />
+              <LogOut size={15} />
             </button>
           )}
         </div>
@@ -2337,7 +2402,7 @@ export default function CabinetPage({
         {/* MAIN PANEL CONTENT */}
         <main className="flex-1 min-w-0 rounded-2xl transition-all duration-300 relative min-h-[500px] bg-transparent border-0 shadow-none p-0" id="cabinet-main-panel">
           <OfflineIndicator theme={theme} />
-          <PWAInstallBanner theme={theme} />
+          {activeTab !== 'comms' && <PWAInstallBanner theme={theme} />}
           
           {/* Glass layout reflection */}
           {activeTab !== 'revisor_tasks' && !activeTab.startsWith('profile') && activeTab !== 'settings' && activeTab !== 'tariff' && activeTab !== 'notifications' && (
@@ -2484,6 +2549,20 @@ export default function CabinetPage({
               tariff={tariff}
               mockEmployees={mockEmployees}
             />
+
+            {/* Corporate Chats & Video Meetings (comms) */}
+            {activeTab === 'comms' && currentUser && (
+              <CommsWorkspace
+                currentUserId={currentUser.id}
+                currentUserName={currentUser.name}
+                currentUserRole={currentUser.role}
+                currentUserAvatar={currentUser.photo_url || currentUser.avatarUrl}
+                companyId={currentUser.company_id || currentUser.director_id || currentUser.id}
+                theme={theme}
+                initialChatId={initialCommsChatId}
+                onStartOrJoinCall={(room) => setActiveVideoRoom(room)}
+              />
+            )}
 
             {/* System PostgreSQL BD ProTalk Admin Page (system_admin) */}
             {activeTab === 'system_admin' && (
@@ -2827,6 +2906,46 @@ export default function CabinetPage({
           </div>
         </div>,
         document.body
+      )}
+
+      {/* Global Incoming Video Call Banner */}
+      {currentUser && (
+        <CommsGlobalOverlay
+          currentUserId={currentUser.id}
+          theme={theme}
+          activeRoomId={activeVideoRoom?.roomId || null}
+          onAcceptCall={(invite: IncomingCallInvite) => {
+            setActiveVideoRoom({
+              roomId: invite.roomId,
+              title: invite.title,
+              chatId: invite.chatId || null
+            });
+          }}
+        />
+      )}
+
+      {/* Active Full-Screen Video Call Room */}
+      {activeVideoRoom && currentUser && (
+        <VideoCallModal
+          roomId={activeVideoRoom.roomId}
+          roomTitle={activeVideoRoom.title}
+          chatId={activeVideoRoom.chatId}
+          currentUserId={currentUser.id}
+          currentUserName={currentUser.name}
+          currentUserAvatar={currentUser.photo_url || currentUser.avatarUrl}
+          colleagues={commsColleagues}
+          theme={theme}
+          onClose={() => {
+            setActiveVideoRoom(null);
+            if (typeof window !== 'undefined') {
+              const url = new URL(window.location.href);
+              if (url.searchParams.has('room')) {
+                url.searchParams.delete('room');
+                window.history.replaceState({}, '', url.pathname + url.search);
+              }
+            }
+          }}
+        />
       )}
 
     </div>

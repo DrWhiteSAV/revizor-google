@@ -10,11 +10,66 @@ import { auditReportWithAiAndTasks, generateCompanyRevisorInsights } from '../se
 import { runProactiveTaskMonitor, sendMorningAndEveningDigests } from '../server/revisor/proactiveMonitor';
 import { sendWebPushToUser } from '../../server/routes/push/service';
 
+let isReminderCheckRunning = false;
+
+const GENERIC_REMINDER_BOILERPLATE = /^Внимание!\s*Напоминаем о необходимости сдать отчет\.?$/i;
+
 export async function checkReportRemindersAndDeadlines() {
+  if (isReminderCheckRunning) return;
+  isReminderCheckRunning = true;
+
   try {
     const db = await getDb();
     const templates = await db.all("SELECT * FROM report_templates WHERE is_active = 1");
     if (!templates || templates.length === 0) return;
+
+    const appBase = (process.env.APP_URL || 'https://ii-rr.ru').replace(/\/+$/, '');
+
+    type PendingPersonalAlert = {
+      emp: any;
+      triggerType: 'REMINDER' | 'DEADLINE';
+      dateKey: string;
+      timezone: string;
+      deadlineStr: string;
+      items: Array<{
+        tplId: string;
+        tplTitle: string;
+        reminderMsg: string;
+        logKey: string;
+        sendTg: boolean;
+        sendInApp: boolean;
+        fillUrl: string;
+      }>;
+    };
+
+    type PendingGroupAlert = {
+      chatId: string;
+      triggerType: 'REMINDER' | 'DEADLINE';
+      dateKey: string;
+      timezone: string;
+      deadlineStr: string;
+      items: Array<{
+        tplId: string;
+        tplTitle: string;
+        reminderMsg: string;
+        fillUrl: string;
+      }>;
+    };
+
+    type PendingOverdueBatch = {
+      targetChat: string;
+      dateKey: string;
+      timezone: string;
+      deadlineStr: string;
+      templateTitles: string[];
+      overdueLogKeys: Array<{ logKey: string; tplId: string }>;
+      empMap: Map<string, { emp: any; missingTitles: string[] }>;
+    };
+
+    const personalBatches = new Map<string, PendingPersonalAlert>();
+    const groupBatches = new Map<string, PendingGroupAlert>();
+    const overdueBatches = new Map<string, PendingOverdueBatch>();
+    const allLogsToMark: Array<{ logKey: string; tplId: string; empId: string; dateKey: string; channel: string }> = [];
 
     for (const tpl of templates) {
       const tz = tpl.timezone || 'Europe/Moscow';
@@ -41,14 +96,13 @@ export async function checkReportRemindersAndDeadlines() {
         for (const p of parts) map[p.type] = p.value;
         hours = parseInt(map.hour || '0', 10);
         minutes = parseInt(map.minute || '0', 10);
-        dayOfWeek = (map.weekday || '').toLowerCase(); // mon, tue, wed, thu, fri, sat, sun
+        dayOfWeek = (map.weekday || '').toLowerCase();
         dayOfMonth = parseInt(map.day || '1', 10);
         const year = map.year || String(now.getUTCFullYear());
         const month = String(map.month || '01').padStart(2, '0');
         const day = String(map.day || '01').padStart(2, '0');
         dateKey = `${year}-${month}-${day}`;
-      } catch (e) {
-        // Fallback to MSK
+      } catch {
         const now = new Date();
         const msk = new Date(now.getTime() + 3 * 3600 * 1000);
         hours = msk.getUTCHours();
@@ -59,21 +113,19 @@ export async function checkReportRemindersAndDeadlines() {
         dayOfWeek = days[msk.getUTCDay()];
       }
 
-      // Check frequency schedule condition
       const tplType = tpl.type || 'PLAN_DAY';
       if (tplType === 'WEEKLY') {
         let scheduleDays: string[] = ['fri'];
         try {
           scheduleDays = typeof tpl.schedule_days === 'string' ? JSON.parse(tpl.schedule_days) : (tpl.schedule_days || ['fri']);
-        } catch(e) {}
-        const isTodayScheduled = scheduleDays.some(d => d.toLowerCase().startsWith(dayOfWeek.slice(0, 3)));
+        } catch {}
+        const isTodayScheduled = scheduleDays.some((d) => d.toLowerCase().startsWith(dayOfWeek.slice(0, 3)));
         if (!isTodayScheduled) continue;
       } else if (tplType === 'MONTHLY') {
         const targetDay = tpl.monthly_day || 25;
         if (dayOfMonth !== targetDay) continue;
       }
 
-      // Determine target deadline in minutes from midnight
       let deadlineHours = 18;
       let deadlineMinutes = 0;
       if (tpl.schedule_mode === 'work_schedule') {
@@ -85,42 +137,41 @@ export async function checkReportRemindersAndDeadlines() {
           deadlineMinutes = 0;
         }
       } else if (tpl.deadline_time) {
-        const [dh, dm] = tpl.deadline_time.split(':').map((v: string) => parseInt(v, 10));
+        const [dh, dm] = String(tpl.deadline_time).split(':').map((v: string) => parseInt(v, 10));
         if (!isNaN(dh)) deadlineHours = dh;
         if (!isNaN(dm)) deadlineMinutes = dm;
       }
 
+      const deadlineStr = `${String(deadlineHours).padStart(2, '0')}:${String(deadlineMinutes).padStart(2, '0')}`;
       const deadlineTotalMinutes = deadlineHours * 60 + deadlineMinutes;
       const currentTotalMinutes = hours * 60 + minutes;
 
-      // Determine when to send reminder (default 15 minutes before deadline)
       let reminderTargetMinutes = deadlineTotalMinutes - (tpl.reminderMinutes || 15);
       if (tpl.reminder_mode === 'custom_time' && tpl.reminder_time) {
-        const [rh, rm] = tpl.reminder_time.split(':').map((v: string) => parseInt(v, 10));
+        const [rh, rm] = String(tpl.reminder_time).split(':').map((v: string) => parseInt(v, 10));
         if (!isNaN(rh) && !isNaN(rm)) {
           reminderTargetMinutes = rh * 60 + rm;
         }
       }
 
-      // Overdue check: 15 minutes after deadline
       const overdueTargetMinutes = deadlineTotalMinutes + 15;
 
-      // Check triggers with a narrow 1-minute window
-      const isReminderTime = (currentTotalMinutes >= reminderTargetMinutes && currentTotalMinutes <= reminderTargetMinutes + 1);
-      const isDeadlineTime = (currentTotalMinutes >= deadlineTotalMinutes && currentTotalMinutes <= deadlineTotalMinutes + 1);
-      const isOverdueTime = (currentTotalMinutes >= overdueTargetMinutes && currentTotalMinutes <= overdueTargetMinutes + 1);
+      const isReminderTime = currentTotalMinutes >= reminderTargetMinutes && currentTotalMinutes <= reminderTargetMinutes + 1;
+      const isDeadlineTime = currentTotalMinutes >= deadlineTotalMinutes && currentTotalMinutes <= deadlineTotalMinutes + 1;
+      const isOverdueTime = currentTotalMinutes >= overdueTargetMinutes && currentTotalMinutes <= overdueTargetMinutes + 1;
 
       if (!isReminderTime && !isDeadlineTime && !isOverdueTime) continue;
 
-      // Find company routing rules
       const companyId = tpl.company_id || 'flagship-main';
-      const routingRules = await db.all(`
+      const routingRules = await db.all(
+        `
         SELECT * FROM telegram_routing_rules 
         WHERE (company_id = ? OR company_id = ? OR company_id IS NULL OR company_id = '' OR company_id = 'flagship-main')
           AND is_active = 1
-      `, [companyId, `com-${companyId.replace(/^com-/, '')}`]);
+      `,
+        [companyId, `com-${companyId.replace(/^com-/, '')}`]
+      );
 
-      // Helper to check if a rule matches this template
       const matchingRules = routingRules.filter((r: any) => {
         if (!r.template_ids || r.template_ids === '["all"]' || r.template_ids === 'all') return true;
         try {
@@ -128,47 +179,59 @@ export async function checkReportRemindersAndDeadlines() {
           if (Array.isArray(arr)) {
             return arr.includes('all') || arr.includes(tpl.id);
           }
-        } catch (e) {}
+        } catch {}
         return false;
       });
 
-      // Find employees assigned to this report
       let targetEmployees: any[] = [];
       let targetEmpIds: string[] = [];
       let targetDeptIds: string[] = [];
       try {
         targetEmpIds = typeof tpl.target_employees === 'string' ? JSON.parse(tpl.target_employees) : (tpl.target_employees || []);
-      } catch (e) {}
+      } catch {}
       try {
         targetDeptIds = typeof tpl.target_departments === 'string' ? JSON.parse(tpl.target_departments) : (tpl.target_departments || []);
-      } catch (e) {}
+      } catch {}
 
-      let empQuery = "SELECT id, name, telegram_id, telegram_handle, telegram_handle as telegramHandle, department_id, company_id FROM employees WHERE 1=1";
+      let empQuery =
+        'SELECT id, name, telegram_id, telegram_handle, telegram_handle as telegramHandle, department_id, company_id FROM employees WHERE 1=1';
       const empParams: any[] = [];
       if (tpl.company_id) {
-        empQuery += " AND (company_id = ? OR company_id = ?)";
+        empQuery += ' AND (company_id = ? OR company_id = ?)';
         empParams.push(tpl.company_id, `com-${tpl.company_id.replace(/^com-/, '')}`);
       }
 
       const allCompanyEmps = await db.all(empQuery, empParams);
 
       if (targetEmpIds.length > 0 && !targetEmpIds.includes('all')) {
-        targetEmployees = allCompanyEmps.filter(e => targetEmpIds.includes(e.id));
+        targetEmployees = allCompanyEmps.filter((e: any) => targetEmpIds.includes(e.id));
       } else if (targetDeptIds.length > 0 && !targetDeptIds.includes('all')) {
-        targetEmployees = allCompanyEmps.filter(e => targetDeptIds.includes(e.department_id));
+        targetEmployees = allCompanyEmps.filter((e: any) => targetDeptIds.includes(e.department_id));
       } else {
         targetEmployees = allCompanyEmps;
       }
 
-      // -------------------------------------------------------------
-      // 1 & 2. REMINDER (15 min before) and DEADLINE REMINDER
-      // -------------------------------------------------------------
+      // Deduplicate targetEmployees by id/telegram_id
+      const seenEmp = new Set<string>();
+      targetEmployees = targetEmployees.filter((e: any) => {
+        const k = String(e.id || '');
+        if (!k || seenEmp.has(k)) return false;
+        seenEmp.add(k);
+        return true;
+      });
+
+      // 1 & 2. REMINDER (-15m) & DEADLINE
       if (isReminderTime || isDeadlineTime) {
-        const triggerType = isDeadlineTime ? 'DEADLINE' : 'REMINDER';
+        const triggerType: 'REMINDER' | 'DEADLINE' = isDeadlineTime ? 'DEADLINE' : 'REMINDER';
+
+        let tgDestinations: any[] = [];
+        try {
+          tgDestinations = typeof tpl.telegram_destinations === 'string' ? JSON.parse(tpl.telegram_destinations) : (tpl.telegram_destinations || []);
+        } catch {}
 
         for (const emp of targetEmployees) {
-          // Check if employee already submitted the report today
-          const alreadySubmitted = await db.get(`
+          const alreadySubmitted = await db.get(
+            `
             SELECT id FROM reports 
             WHERE (templateId = ? OR templateTitle = ?) 
               AND (employeeId = ? OR employee_id = ?) 
@@ -179,26 +242,22 @@ export async function checkReportRemindersAndDeadlines() {
                 OR (createdAt IS NOT NULL AND date(createdAt) = ?)
               )
             LIMIT 1
-          `, [tpl.id, tpl.title, emp.id, emp.id, dateKey, `${dateKey}%`, dateKey, dateKey]);
-
-          // If report is already submitted, NO reminder should be sent!
+          `,
+            [tpl.id, tpl.title, emp.id, emp.id, dateKey, `${dateKey}%`, dateKey, dateKey]
+          );
           if (alreadySubmitted) continue;
 
-          // Deduplication: check if reminder has ALREADY been sent today for this trigger
           const logKey = `log-${tpl.id}-${emp.id}-${triggerType}-${dateKey}`;
           const alreadySent = await db.get(
-            "SELECT id FROM report_reminder_logs WHERE (id = ? OR (template_id = ? AND employee_id = ? AND date_key = ? AND channel = ?))",
+            'SELECT id FROM report_reminder_logs WHERE (id = ? OR (template_id = ? AND employee_id = ? AND date_key = ? AND channel = ?))',
             [logKey, tpl.id, emp.id, dateKey, triggerType]
           );
           if (alreadySent) continue;
 
-          // Determine rule permissions for this trigger
-          // Default to enabled if not explicitly disabled
           let sendTg = tpl.send_telegram_reminder !== 0;
           let sendInApp = tpl.send_inapp_notification !== 0;
 
           if (matchingRules.length > 0) {
-            // Check if any matching rule controls this
             for (const r of matchingRules) {
               if (r.send_telegram === 0) sendTg = false;
               if (r.notify_inapp === 0) sendInApp = false;
@@ -209,101 +268,70 @@ export async function checkReportRemindersAndDeadlines() {
             }
           }
 
-          const reminderMsg = tpl.reminderText || (triggerType === 'DEADLINE' 
-            ? `Время сдачи отчета «${tpl.title}» истекает! Пожалуйста, сдайте отчет.` 
-            : `Напоминаем о необходимости сдать отчет «${tpl.title}» за 15 минут до дедлайна.`);
+          const rawReminderText = String(tpl.reminderText || '').trim();
+          const reminderMsg =
+            rawReminderText && !GENERIC_REMINDER_BOILERPLATE.test(rawReminderText)
+              ? rawReminderText
+              : triggerType === 'DEADLINE'
+                ? `Время сдачи отчета «${tpl.title}» истекает! Пожалуйста, сдайте отчет.`
+                : `Напоминаем о необходимости сдать отчет «${tpl.title}» за 15 минут до дедлайна.`;
 
-          // 1. In-app notification
-          if (sendInApp) {
-            const notifId = 'notif-rem-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
-            const remTitle = triggerType === 'DEADLINE' ? `Дедлайн отчета: ${tpl.title}` : `Напоминание об отчете: ${tpl.title}`;
-            const remUrl = `/cabinet/raport/fill/${tpl.id}`;
-            await db.run(`
-              INSERT INTO notifications (id, userId, title, message, type, isRead, timestamp, actionUrl)
-              VALUES (?, ?, ?, ?, 'REPORT_REMINDER', 0, CURRENT_TIMESTAMP, ?)
-            `, [
-              notifId,
-              emp.id,
-              remTitle,
+          const fillUrl = `${appBase}/cabinet/raport/fill/${encodeURIComponent(tpl.id)}`;
+          const recipientBatchKey = `${emp.telegram_id || emp.id}::${triggerType}::${dateKey}`;
+
+          if (!personalBatches.has(recipientBatchKey)) {
+            personalBatches.set(recipientBatchKey, {
+              emp,
+              triggerType,
+              dateKey,
+              timezone: tz,
+              deadlineStr,
+              items: []
+            });
+          }
+          const pBatch = personalBatches.get(recipientBatchKey)!;
+          if (!pBatch.items.some((x) => x.tplId === tpl.id)) {
+            pBatch.items.push({
+              tplId: tpl.id,
+              tplTitle: tpl.title,
               reminderMsg,
-              remUrl
-            ]);
-            sendWebPushToUser(db, String(emp.id), {
-              title: remTitle,
-              body: reminderMsg,
-              url: remUrl,
-              tag: `rem_${tpl.id}_${triggerType}`,
-              category: 'reports'
-            }).catch(() => {});
+              logKey,
+              sendTg,
+              sendInApp,
+              fillUrl
+            });
           }
-
-          const fillUrl = `${(process.env.APP_URL || 'https://ii-rr.ru').replace(/\/+$/, '')}/cabinet/raport/fill/${encodeURIComponent(tpl.id)}`;
-          const reminderRich = buildCronReportAlertRichPayload({
-            kind: triggerType === 'DEADLINE' ? 'deadline' : 'reminder',
-            templateTitle: tpl.title,
-            deadlineTime: tpl.deadline_time || '18:00',
-            timezone: tz,
-            employeeName: emp.name,
-            reminderMessage: reminderMsg,
-            actionUrl: fillUrl
-          });
-
-          // 2. Telegram message directly to employee (Bot API 10.3 Rich Blocks)
-          if (sendTg && emp.telegram_id) {
-            try {
-              const sendRes = await sendTelegramRichMessage({
-                chatId: emp.telegram_id,
-                blocks: reminderRich.blocks,
-                markdown: reminderRich.fallbackMarkdown,
-                buttons: reminderRich.buttonsString
-              });
-              if (!sendRes.ok && !isTelegramClientError(sendRes.error)) {
-                console.warn(`[Cron Telegram Reminder Warning for ${emp.name}]:`, sendRes.error);
-              }
-            } catch (tgErr: any) {
-              if (!isTelegramClientError(tgErr.message)) {
-                console.warn(`[Cron Telegram Reminder Error for ${emp.name}]:`, tgErr.message);
-              }
-            }
-          }
-
-          // 3. Telegram routing to group/channels if configured
-          let tgDestinations: any[] = [];
-          try {
-            tgDestinations = typeof tpl.telegram_destinations === 'string' ? JSON.parse(tpl.telegram_destinations) : (tpl.telegram_destinations || []);
-          } catch(e) {}
 
           for (const dest of tgDestinations) {
             if (dest.chatId && dest.sendReminder !== false && sendTg) {
-              try {
-                const sendRes = await sendTelegramRichMessage({
-                  chatId: dest.chatId,
-                  blocks: reminderRich.blocks,
-                  markdown: reminderRich.fallbackMarkdown,
-                  buttons: reminderRich.buttonsString
+              const gKey = `${String(dest.chatId).trim()}::${triggerType}::${dateKey}`;
+              if (!groupBatches.has(gKey)) {
+                groupBatches.set(gKey, {
+                  chatId: String(dest.chatId).trim(),
+                  triggerType,
+                  dateKey,
+                  timezone: tz,
+                  deadlineStr,
+                  items: []
                 });
-                if (!sendRes.ok && !isTelegramClientError(sendRes.error)) {
-                  console.warn(`[Cron Telegram Group Reminder Warning]:`, sendRes.error);
-                }
-              } catch (destErr: any) {
-                if (!isTelegramClientError(destErr.message)) {
-                  console.warn(`[Cron Telegram Group Reminder Error]:`, destErr.message);
-                }
+              }
+              const gBatch = groupBatches.get(gKey)!;
+              if (!gBatch.items.some((x) => x.tplId === tpl.id)) {
+                gBatch.items.push({
+                  tplId: tpl.id,
+                  tplTitle: tpl.title,
+                  reminderMsg,
+                  fillUrl
+                });
               }
             }
           }
 
-          // Mark sent in logs with deterministic primary key to prevent any duplicate sends
-          await db.run(
-            "INSERT OR REPLACE INTO report_reminder_logs (id, template_id, employee_id, date_key, channel, sent_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-            [logKey, tpl.id, emp.id, dateKey, triggerType]
-          );
+          allLogsToMark.push({ logKey, tplId: tpl.id, empId: emp.id, dateKey, channel: triggerType });
         }
       }
 
-      // -------------------------------------------------------------
       // 3. OVERDUE LIST (+15 minutes after deadline)
-      // -------------------------------------------------------------
       if (isOverdueTime) {
         const overdueLogKey = `log-${tpl.id}-ALL_OVERDUE-OVERDUE_15MIN-${dateKey}`;
         const alreadySentOverdue = await db.get(
@@ -312,10 +340,8 @@ export async function checkReportRemindersAndDeadlines() {
         );
 
         if (!alreadySentOverdue) {
-          // Check if overdue sending is enabled in rules or template
           let sendOverdue = tpl.overdue_15m_tg !== 0;
           if (matchingRules.length > 0) {
-            // If any matching rule explicitly enables overdue_15m_tg
             const hasExplicitOverdueRule = matchingRules.some((r: any) => r.overdue_15m_tg === 1);
             if (hasExplicitOverdueRule) sendOverdue = true;
           }
@@ -323,7 +349,8 @@ export async function checkReportRemindersAndDeadlines() {
           if (sendOverdue) {
             const unsubmittedEmployees: any[] = [];
             for (const emp of targetEmployees) {
-              const alreadySubmitted = await db.get(`
+              const alreadySubmitted = await db.get(
+                `
                 SELECT id FROM reports 
                 WHERE (templateId = ? OR templateTitle = ?) 
                   AND (employeeId = ? OR employee_id = ?) 
@@ -334,98 +361,263 @@ export async function checkReportRemindersAndDeadlines() {
                     OR (createdAt IS NOT NULL AND date(createdAt) = ?)
                   )
                 LIMIT 1
-              `, [tpl.id, tpl.title, emp.id, emp.id, dateKey, `${dateKey}%`, dateKey, dateKey]);
+              `,
+                [tpl.id, tpl.title, emp.id, emp.id, dateKey, `${dateKey}%`, dateKey, dateKey]
+              );
 
               if (!alreadySubmitted) {
                 unsubmittedEmployees.push(emp);
               }
             }
 
-            if (unsubmittedEmployees.length > 0) {
-              const appBase = (process.env.APP_URL || 'https://ii-rr.ru').replace(/\/+$/, '');
-              const mappedOverdue = unsubmittedEmployees.map((emp) => {
-                const systemUrl = `${appBase}/cabinet/company?employeeId=${encodeURIComponent(emp.id)}`;
-                let tgLabel = 'не привязан';
-                if (emp.telegramHandle) {
-                  tgLabel = `@${emp.telegramHandle.replace(/^@/, '')}`;
-                } else if (emp.telegram_id) {
-                  tgLabel = `TG: ${emp.telegram_id}`;
-                }
-                return {
-                  name: emp.name,
-                  profileUrl: systemUrl,
-                  tgLabel
-                };
-              });
-
-              const overdueRich = buildCronReportAlertRichPayload({
-                kind: 'overdue_list',
-                templateTitle: tpl.title,
-                deadlineTime: tpl.deadline_time || '18:00',
-                timezone: tz,
-                unsubmittedEmployees: mappedOverdue,
-                actionUrl: `${appBase}/cabinet/analytics`
-              });
-
-              // Collect target chats for overdue list: director, managers, or rules with overdue_15m_tg
-              const overdueTargetChats = new Set<string>();
-
-              // 1. From matching rules
-              for (const r of matchingRules) {
-                if (r.send_telegram !== 0 && r.overdue_15m_tg !== 0) {
-                  if (r.target_chat_id && r.target_chat_id !== '{employee_tg}') {
-                    overdueTargetChats.add(String(r.target_chat_id).trim());
-                  } else if (r.destination_type === 'director') {
-                    // Find company director TG
-                    const dir = await db.get("SELECT telegram_id FROM users WHERE (company_id = ? OR id = ?) AND role IN ('DIRECTOR', 'ADMIN', 'SUPER_ADMIN') AND telegram_id IS NOT NULL LIMIT 1", [companyId, companyId]);
-                    if (dir?.telegram_id) overdueTargetChats.add(String(dir.telegram_id).trim());
-                  }
-                }
-              }
-
-              // 2. Default to director if no specific chat configured
-              if (overdueTargetChats.size === 0) {
-                const dir = await db.get("SELECT telegram_id FROM users WHERE (company_id = ? OR id = ?) AND role IN ('DIRECTOR', 'ADMIN', 'SUPER_ADMIN') AND telegram_id IS NOT NULL LIMIT 1", [companyId, companyId]);
-                if (dir?.telegram_id) {
-                  overdueTargetChats.add(String(dir.telegram_id).trim());
-                } else {
-                  // Fallback to bot admin id
-                  const configRow = await db.get("SELECT adminTelegramId FROM telegram_bot_config WHERE id = ? OR id = 'default' LIMIT 1", [`company_${companyId}`]);
-                  if (configRow?.adminTelegramId) overdueTargetChats.add(String(configRow.adminTelegramId).trim());
-                }
-              }
-
-              // Dispatch overdue list via Bot API 10.3 Rich Blocks
-              for (const targetChat of overdueTargetChats) {
-                try {
-                  const sendRes = await sendTelegramRichMessage({
-                    chatId: targetChat,
-                    blocks: overdueRich.blocks,
-                    markdown: overdueRich.fallbackMarkdown,
-                    buttons: overdueRich.buttonsString
-                  });
-                  if (!sendRes.ok && !isTelegramClientError(sendRes.error)) {
-                    console.warn(`[Cron Overdue List Telegram Warning to ${targetChat}]:`, sendRes.error);
-                  }
-                } catch (oe: any) {
-                  if (!isTelegramClientError(oe.message)) {
-                    console.warn(`[Cron Overdue List Telegram Error to ${targetChat}]:`, oe.message);
-                  }
+            const overdueTargetChats = new Set<string>();
+            for (const r of matchingRules) {
+              if (r.send_telegram !== 0 && r.overdue_15m_tg !== 0) {
+                if (r.target_chat_id && r.target_chat_id !== '{employee_tg}') {
+                  overdueTargetChats.add(String(r.target_chat_id).trim());
+                } else if (r.destination_type === 'director') {
+                  const dir = await db.get(
+                    "SELECT telegram_id FROM users WHERE (company_id = ? OR id = ?) AND role IN ('DIRECTOR', 'ADMIN', 'SUPER_ADMIN') AND telegram_id IS NOT NULL LIMIT 1",
+                    [companyId, companyId]
+                  );
+                  if (dir?.telegram_id) overdueTargetChats.add(String(dir.telegram_id).trim());
                 }
               }
             }
 
-            // Mark overdue list logged for today so it will not repeat
-            await db.run(
-              "INSERT OR REPLACE INTO report_reminder_logs (id, template_id, employee_id, date_key, channel, sent_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-              [overdueLogKey, tpl.id, 'ALL_OVERDUE', dateKey, 'OVERDUE_15MIN']
-            );
+            if (overdueTargetChats.size === 0) {
+              const dir = await db.get(
+                "SELECT telegram_id FROM users WHERE (company_id = ? OR id = ?) AND role IN ('DIRECTOR', 'ADMIN', 'SUPER_ADMIN') AND telegram_id IS NOT NULL LIMIT 1",
+                [companyId, companyId]
+              );
+              if (dir?.telegram_id) {
+                overdueTargetChats.add(String(dir.telegram_id).trim());
+              } else {
+                const configRow = await db.get(
+                  "SELECT adminTelegramId FROM telegram_bot_config WHERE id = ? OR id = 'default' LIMIT 1",
+                  [`company_${companyId}`]
+                );
+                if (configRow?.adminTelegramId) overdueTargetChats.add(String(configRow.adminTelegramId).trim());
+              }
+            }
+
+            if (unsubmittedEmployees.length > 0) {
+              for (const targetChat of overdueTargetChats) {
+                const batchKey = `${targetChat}::${dateKey}`;
+                if (!overdueBatches.has(batchKey)) {
+                  overdueBatches.set(batchKey, {
+                    targetChat,
+                    dateKey,
+                    timezone: tz,
+                    deadlineStr,
+                    templateTitles: [],
+                    overdueLogKeys: [],
+                    empMap: new Map()
+                  });
+                }
+                const oBatch = overdueBatches.get(batchKey)!;
+                if (!oBatch.templateTitles.includes(tpl.title)) {
+                  oBatch.templateTitles.push(tpl.title);
+                }
+                if (!oBatch.overdueLogKeys.some((k) => k.logKey === overdueLogKey)) {
+                  oBatch.overdueLogKeys.push({ logKey: overdueLogKey, tplId: tpl.id });
+                }
+                for (const emp of unsubmittedEmployees) {
+                  const empKey = String(emp.telegram_id || emp.id || emp.name);
+                  if (!oBatch.empMap.has(empKey)) {
+                    oBatch.empMap.set(empKey, { emp, missingTitles: [] });
+                  }
+                  const entry = oBatch.empMap.get(empKey)!;
+                  if (!entry.missingTitles.includes(tpl.title)) {
+                    entry.missingTitles.push(tpl.title);
+                  }
+                }
+              }
+            } else {
+              allLogsToMark.push({
+                logKey: overdueLogKey,
+                tplId: tpl.id,
+                empId: 'ALL_OVERDUE',
+                dateKey,
+                channel: 'OVERDUE_15MIN'
+              });
+            }
           }
         }
       }
     }
+
+    // Dispatch consolidated personal reminders / deadlines (MAX 1 per employee per minute/type)
+    for (const batch of personalBatches.values()) {
+      const uniqueTitles = Array.from(new Set(batch.items.map((i) => i.tplTitle)));
+      const anyTg = batch.items.some((i) => i.sendTg);
+      const anyInApp = batch.items.some((i) => i.sendInApp);
+      const primaryItem = batch.items[0];
+      const mergedMsg =
+        uniqueTitles.length > 1
+          ? `Требуется сдать отчеты (${uniqueTitles.length} шт.): ${uniqueTitles.map((t) => `«${t}»`).join(', ')}.`
+          : primaryItem.reminderMsg;
+
+      if (anyInApp) {
+        const notifId = 'notif-rem-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+        const remTitle =
+          batch.triggerType === 'DEADLINE'
+            ? uniqueTitles.length > 1
+              ? `Дедлайн отчетов (${uniqueTitles.length})`
+              : `Дедлайн отчета: ${uniqueTitles[0]}`
+            : uniqueTitles.length > 1
+              ? `Напоминание об отчетах (${uniqueTitles.length})`
+              : `Напоминание об отчете: ${uniqueTitles[0]}`;
+        await db.run(
+          `
+          INSERT INTO notifications (id, userId, title, message, type, isRead, timestamp, actionUrl)
+          VALUES (?, ?, ?, ?, 'REPORT_REMINDER', 0, CURRENT_TIMESTAMP, ?)
+        `,
+          [notifId, batch.emp.id, remTitle, mergedMsg, primaryItem.fillUrl.replace(appBase, '') || '/cabinet/raport']
+        );
+        sendWebPushToUser(db, String(batch.emp.id), {
+          title: remTitle,
+          body: mergedMsg,
+          url: primaryItem.fillUrl.replace(appBase, '') || '/cabinet/raport',
+          tag: `rem_batch_${batch.triggerType}_${batch.dateKey}`,
+          category: 'reports'
+        }).catch(() => {});
+      }
+
+      if (anyTg && batch.emp.telegram_id) {
+        const reminderRich = buildCronReportAlertRichPayload({
+          kind: batch.triggerType === 'DEADLINE' ? 'deadline' : 'reminder',
+          templateTitle: uniqueTitles[0] || 'Рапорт',
+          templateTitles: uniqueTitles,
+          deadlineTime: batch.deadlineStr,
+          timezone: batch.timezone,
+          employeeName: batch.emp.name,
+          reminderMessage: mergedMsg,
+          actionUrl: primaryItem.fillUrl,
+          actionButtons: batch.items.slice(0, 3).map((item, idx) => ({
+            text: batch.items.length > 1 ? `📝 ${idx + 1}. ${item.tplTitle.slice(0, 22)}` : '📝 Заполнить отчет',
+            url: item.fillUrl
+          }))
+        });
+        try {
+          const sendRes = await sendTelegramRichMessage({
+            chatId: batch.emp.telegram_id,
+            blocks: reminderRich.blocks,
+            markdown: reminderRich.fallbackMarkdown,
+            buttons: reminderRich.buttonsString
+          });
+          if (!sendRes.ok && !isTelegramClientError(sendRes.error)) {
+            console.warn(`[Cron Telegram Reminder Warning for ${batch.emp.name}]:`, sendRes.error);
+          }
+        } catch (tgErr: any) {
+          if (!isTelegramClientError(tgErr.message)) {
+            console.warn(`[Cron Telegram Reminder Error for ${batch.emp.name}]:`, tgErr.message);
+          }
+        }
+      }
+    }
+
+    // Dispatch consolidated group reminders / deadlines
+    for (const gBatch of groupBatches.values()) {
+      const uniqueTitles = Array.from(new Set(gBatch.items.map((i) => i.tplTitle)));
+      const primaryItem = gBatch.items[0];
+      const reminderRich = buildCronReportAlertRichPayload({
+        kind: gBatch.triggerType === 'DEADLINE' ? 'deadline' : 'reminder',
+        templateTitle: uniqueTitles[0] || 'Рапорт',
+        templateTitles: uniqueTitles,
+        deadlineTime: gBatch.deadlineStr,
+        timezone: gBatch.timezone,
+        employeeName: 'Команда',
+        reminderMessage:
+          uniqueTitles.length > 1
+            ? `Срок сдачи отчетов: ${uniqueTitles.map((t) => `«${t}»`).join(', ')}.`
+            : primaryItem.reminderMsg,
+        actionUrl: primaryItem.fillUrl,
+        actionButtons: gBatch.items.slice(0, 3).map((item, idx) => ({
+          text: gBatch.items.length > 1 ? `📝 ${idx + 1}. ${item.tplTitle.slice(0, 22)}` : '📝 Заполнить отчет',
+          url: item.fillUrl
+        }))
+      });
+      try {
+        await sendTelegramRichMessage({
+          chatId: gBatch.chatId,
+          blocks: reminderRich.blocks,
+          markdown: reminderRich.fallbackMarkdown,
+          buttons: reminderRich.buttonsString
+        });
+      } catch (destErr: any) {
+        if (!isTelegramClientError(destErr.message)) {
+          console.warn('[Cron Telegram Group Reminder Error]:', destErr.message);
+        }
+      }
+    }
+
+    // Dispatch consolidated overdue summaries (MAX 1 per director/chat across all due templates)
+    for (const oBatch of overdueBatches.values()) {
+      const mappedOverdue = Array.from(oBatch.empMap.values()).map(({ emp, missingTitles }) => {
+        const systemUrl = `${appBase}/cabinet/company?employeeId=${encodeURIComponent(emp.id)}`;
+        let tgLabel = 'не привязан';
+        if (emp.telegramHandle) {
+          tgLabel = `@${String(emp.telegramHandle).replace(/^@/, '')}`;
+        } else if (emp.telegram_id) {
+          tgLabel = `TG: ${emp.telegram_id}`;
+        }
+        return {
+          name: emp.name,
+          profileUrl: systemUrl,
+          tgLabel,
+          missingReportsText: oBatch.templateTitles.length > 1 ? missingTitles.join(', ') : undefined
+        };
+      });
+
+      const overdueRich = buildCronReportAlertRichPayload({
+        kind: 'overdue_list',
+        templateTitle: oBatch.templateTitles[0] || 'Рапорт',
+        templateTitles: oBatch.templateTitles,
+        deadlineTime: oBatch.deadlineStr,
+        timezone: oBatch.timezone,
+        unsubmittedEmployees: mappedOverdue,
+        actionUrl: `${appBase}/cabinet/analytics`
+      });
+
+      try {
+        const sendRes = await sendTelegramRichMessage({
+          chatId: oBatch.targetChat,
+          blocks: overdueRich.blocks,
+          markdown: overdueRich.fallbackMarkdown,
+          buttons: overdueRich.buttonsString
+        });
+        if (!sendRes.ok && !isTelegramClientError(sendRes.error)) {
+          console.warn(`[Cron Overdue List Telegram Warning to ${oBatch.targetChat}]:`, sendRes.error);
+        }
+      } catch (oe: any) {
+        if (!isTelegramClientError(oe.message)) {
+          console.warn(`[Cron Overdue List Telegram Error to ${oBatch.targetChat}]:`, oe.message);
+        }
+      }
+
+      for (const k of oBatch.overdueLogKeys) {
+        allLogsToMark.push({
+          logKey: k.logKey,
+          tplId: k.tplId,
+          empId: 'ALL_OVERDUE',
+          dateKey: oBatch.dateKey,
+          channel: 'OVERDUE_15MIN'
+        });
+      }
+    }
+
+    // Persist reminder logs so none of these fire again today
+    for (const logItem of allLogsToMark) {
+      await db.run(
+        'INSERT OR REPLACE INTO report_reminder_logs (id, template_id, employee_id, date_key, channel, sent_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)',
+        [logItem.logKey, logItem.tplId, logItem.empId, logItem.dateKey, logItem.channel]
+      );
+    }
   } catch (err: any) {
     console.error('[Cron Report Reminders Error]:', err.message);
+  } finally {
+    isReminderCheckRunning = false;
   }
 }
 

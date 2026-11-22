@@ -7,6 +7,7 @@ import {
 import { BlogPost, UserProfile } from '../types';
 import { DEFAULT_BLOG_POSTS } from '../data/defaultBlogPosts';
 import MarkdownRenderer from '../components/MarkdownRenderer';
+import { CopyableBlogImage } from '../components/blog/CopyableBlogImage';
 import CommentsSection from '../components/CommentsSection';
 import InteractiveGoldenWaves from '../components/InteractiveGoldenWaves';
 import { MiniAudioField } from '../components/voice/MiniAudioField';
@@ -259,14 +260,13 @@ export default function BlogPage({ onNavigate, activePostId, currentUser }: Blog
 
             {/* Post Main image banner */}
             {activePost.image && (
-              <div className="rounded-3xl overflow-hidden border border-[#E7C768]/40 shadow-[0_0_30px_rgba(244,238,142,0.2)] max-h-[400px] bg-[#1A0F02]/70">
-                <img 
-                  src={activePost.image} 
-                  alt={activePost.title} 
-                  className="w-full h-full object-cover"
-                  referrerPolicy="no-referrer"
-                />
-              </div>
+              <CopyableBlogImage
+                src={activePost.image}
+                alt={activePost.title}
+                variant="cover"
+                containerClassName="copyable-blog-media relative rounded-3xl overflow-hidden border border-[#E7C768]/40 shadow-[0_0_30px_rgba(244,238,142,0.2)] max-h-[420px] bg-[#1A0F02]/70"
+                imgClassName="copyable-blog-img w-full h-full max-h-[420px] object-cover"
+              />
             )}
 
             {/* Content formatted in Markdown with Gold gradients & embeddings */}

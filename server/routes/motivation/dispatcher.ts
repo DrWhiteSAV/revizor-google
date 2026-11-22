@@ -31,7 +31,8 @@ export async function processReportMotivationAndNotify(
     timestamp?: string;
     answers?: any;
   },
-  origin?: string
+  origin?: string,
+  options?: { skipNotifications?: boolean }
 ): Promise<MotivationCalculationResult | null> {
   try {
     await ensureMotivationSchema(db);
@@ -76,8 +77,28 @@ export async function processReportMotivationAndNotify(
       eveningReport: reportPayload
     });
 
-    // Save/upsert daily accrual row
     const accrualId = `acc_${empId}_${result.accrualDate}_${calculator.id}`;
+    const existingAccrual = await db
+      .get(
+        `SELECT id, evening_report_id, total_earned_rub FROM motivation_accruals WHERE id = ? LIMIT 1`,
+        [accrualId]
+      )
+      .catch(() => null);
+    const existingNotifForReport = reportPayload.id
+      ? await db
+          .get(
+            `SELECT id FROM notifications WHERE type = 'MOTIVATION_ACCRUAL' AND "reportId" = ? LIMIT 1`,
+            [reportPayload.id]
+          )
+          .catch(() => null)
+      : null;
+
+    const sameAccrualAlreadyProcessed =
+      Boolean(existingAccrual) &&
+      String(existingAccrual.evening_report_id || '') === String(result.eveningReportId || '') &&
+      Math.abs(Number(existingAccrual.total_earned_rub || 0) - Number(result.totalEarnedRub || 0)) < 0.01;
+
+    // Save/upsert daily accrual row
     await db.run(
       `
       INSERT INTO motivation_accruals (
@@ -145,6 +166,10 @@ export async function processReportMotivationAndNotify(
         result.notes.join(' ')
       ]
     );
+
+    if (options?.skipNotifications || sameAccrualAlreadyProcessed || existingNotifForReport) {
+      return result;
+    }
 
     // 1. Personal in-app notification for the employee
     const kpiSummaryLine =

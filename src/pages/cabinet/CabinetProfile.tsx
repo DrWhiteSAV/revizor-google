@@ -27,11 +27,15 @@ import {
   ListTodo,
   ClipboardList,
   Trash2,
-  Clock
+  Clock,
+  Smartphone,
+  SlidersHorizontal
 } from 'lucide-react';
 import { UserProfile, TariffState, Transaction, UserRole } from '../../types';
 import { TIMEZONE_OPTIONS, getSystemTimezone, setSystemTimezone, DEFAULT_TIMEZONE } from '../../utils/timezone';
 import { EmployeeEditModal } from '../../components/employees/EmployeeEditModal';
+import { OnboardingHeaderTrigger } from '../../components/onboarding/OnboardingModal';
+import { PWAInstallProfileButton } from '../../components/pwa/PWAInstallProfileButton';
 
 interface CabinetProfileProps {
   currentUser?: UserProfile | null;
@@ -933,7 +937,12 @@ export default function CabinetProfile({
             <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-transparent via-[#F4EE8E] to-transparent" />
 
             <div className="space-y-4 relative z-10">
-              
+              {!viewOnly && currentUser?.id && (
+                <div className="flex lg:hidden justify-center pb-1">
+                  <OnboardingHeaderTrigger userId={currentUser.id} theme={theme} />
+                </div>
+              )}
+
               {/* User Identity & Info Sections in Required Order */}
               <div className="text-center space-y-2.5">
                 
@@ -1320,7 +1329,7 @@ export default function CabinetProfile({
                 <div className="absolute top-0 inset-x-0 h-1/2 bg-gradient-to-b from-amber-300/20 via-transparent to-transparent pointer-events-none rounded-t-3xl" />
                 <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-transparent via-amber-400/80 to-transparent" />
 
-                <div className="space-y-3 relative z-10 flex-1 flex flex-col justify-between">
+                <div className="space-y-2.5 relative z-10 flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col justify-between pr-0.5">
                   
                   {/* Header */}
                   <div className="border-b border-amber-500/30 pb-2.5 flex items-center justify-between">
@@ -1441,17 +1450,74 @@ export default function CabinetProfile({
                     )}
                   </div>
 
+                  {/* ПРИЛОЖЕНИЕ ДЛЯ ТЕЛЕФОНА (PWA) И НАСТРОЙКА PUSH */}
+                  {!viewOnly && (
+                    <div
+                      onClick={(e) => e.stopPropagation()}
+                      className={`p-3 rounded-2xl border bg-transparent space-y-2 text-left transition-all ${
+                        theme === 'dark'
+                          ? 'border-amber-400/45 text-amber-50'
+                          : 'border-amber-900/35 text-amber-950'
+                      }`}
+                      id="profile-pwa-push-card"
+                    >
+                      <div className="flex items-start gap-2.5">
+                        <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#F4EE8E] via-[#E7C768] to-[#D99E41] text-amber-950 flex items-center justify-center shrink-0 border border-amber-300/70 shadow-sm">
+                          <Smartphone size={16} />
+                        </div>
+                        <div className="min-w-0 space-y-0.5">
+                          <p className={`text-[14px] font-bold leading-snug ${theme === 'dark' ? 'text-[#F4EE8E]' : 'text-amber-950'}`}>
+                            Приложение для телефона
+                          </p>
+                          <p className={`text-[14px] leading-snug ${theme === 'dark' ? 'text-amber-100/85' : 'text-amber-900'}`}>
+                            Установите иконку на рабочий стол для быстрых уведомлений.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 pt-0.5 flex-wrap sm:flex-nowrap">
+                        <PWAInstallProfileButton
+                          theme={theme}
+                          label="Добавить"
+                          installedLabel="Добавлено"
+                          iconOnlyOnMobile
+                          className="flex-1 min-w-[44px]"
+                        />
+                        {onNavigate && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onNavigate('profile_notifications');
+                            }}
+                            title="Настроить уведомления"
+                            aria-label="Настроить уведомления"
+                            className={`min-h-[42px] px-2.5 py-2 rounded-xl border text-[14px] font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 bg-transparent min-w-[44px] flex-1 ${
+                              theme === 'dark'
+                                ? 'border-amber-400/50 text-[#F4EE8E] hover:bg-amber-400/15'
+                                : 'border-amber-900/40 text-amber-950 hover:bg-amber-900/10'
+                            }`}
+                            id="profile-open-push-settings-btn"
+                          >
+                            <SlidersHorizontal size={16} className="shrink-0" />
+                            <span className="hidden sm:inline whitespace-nowrap">Настроить</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Flip button to Notifications */}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       handleToggleFlip('telegram');
                     }}
-                    className={`w-full py-2.5 rounded-xl border font-mono text-sm font-bold transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95 shadow-md mt-1 ${
+                    className={`w-full py-2.5 rounded-xl border font-mono text-[14px] font-bold transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95 shadow-md mt-1 ${
                       theme === 'dark' ? 'bg-amber-500/25 hover:bg-amber-500/35 border-amber-400/60 text-[#F4EE8E]' : 'bg-amber-200 hover:bg-amber-300 border-amber-500 text-zinc-950'
                     }`}
                   >
-                    <Bell size={14} className="text-amber-400 animate-bounce" />
+                    <Bell size={15} className="text-amber-400 animate-bounce" />
                     <span>Уведомления ({notifList.length})</span>
                     <ChevronRight size={15} />
                   </button>
@@ -1482,7 +1548,7 @@ export default function CabinetProfile({
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          onNavigate('/cabinet/notifications');
+                          onNavigate('profile_notifications');
                         }}
                         className={`px-3 py-1.5 rounded-lg border text-sm font-bold transition-all cursor-pointer ${
                           theme === 'dark'

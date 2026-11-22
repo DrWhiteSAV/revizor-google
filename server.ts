@@ -14,10 +14,13 @@ import fs from "fs";
 import os from "os";
 import multer from "multer";
 import dotenv from "dotenv";
-import { getDb, recalculateUserBalancesFromTransactions, performDailyDatabaseBackup, generateId } from "./src/db/initDb";
+import { getDb, type PgDbAdapter, recalculateUserBalancesFromTransactions, performDailyDatabaseBackup, generateId } from "./src/db/initDb";
 import { startCronScheduler } from "./src/cron/scheduler";
 import { ensureRevisorSchema } from "./src/server/revisor/schema";
 import { registerRevisorProactiveRoutes } from "./src/server/revisor/routes";
+import { ensureCommsSchema } from "./src/server/comms/schema";
+import { registerCommsRoutes } from "./src/server/comms/routes";
+import { attachCommsWebSocketServer } from "./src/server/comms/wsHub";
 import { 
   sendTelegramApiMessage, 
   sendTelegramPhoto, 
@@ -102,7 +105,20 @@ function detectProductionMode(): boolean {
 const app = express();
 const PORT = resolveListenPort();
 const HOST = "0.0.0.0";
-const STATE_FILE_PATH = path.join(process.cwd(), "state.json");
+
+let cabinetStatesTableReady = false;
+async function ensureCabinetStatesTable(db: PgDbAdapter) {
+  if (cabinetStatesTableReady) return;
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS cabinet_states (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      state_json TEXT NOT NULL,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  cabinetStatesTableReady = true;
+}
 
 app.set("trust proxy", 1);
 
@@ -123,12 +139,16 @@ import {
   handleIconSvg,
   handleSquarePng,
   handleSiteManifest,
+  handleYandexTableau,
+  handleBrowserConfigXml,
+  handleRssXml,
   handleLlmsFullTxt
 } from "./src/server/seo/assets";
 import { emitDbChange } from "./src/server/realtimeEvents";
 
 app.get("/robots.txt", handleRobotsTxt);
 app.get("/sitemap.xml", (req, res) => handleSitemapXml(req, res, getDb));
+app.get("/rss.xml", (req, res) => handleRssXml(req, res, getDb));
 app.get("/llms.txt", (req, res) => handleLlmsTxt(req, res, getDb));
 app.get("/llms-full.txt", (req, res) => handleLlmsFullTxt(req, res, getDb));
 app.get("/favicon.ico", handleFaviconIco);
@@ -140,6 +160,9 @@ app.get("/favicon-192.png", handleSquarePng(192));
 app.get("/favicon-512.png", handleSquarePng(512));
 app.get("/pwa-maskable-512.png", handleSquarePng(512, true));
 app.get("/site.webmanifest", handleSiteManifest);
+app.get("/manifest.webmanifest", handleSiteManifest);
+app.get("/yandex-tableau.json", handleYandexTableau);
+app.get("/browserconfig.xml", handleBrowserConfigXml);
 
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
@@ -160,6 +183,7 @@ getDb().then(async (db) => {
   await ensureRevisorSchema(db);
   await ensureMotivationSchema(db);
   await ensurePushSchema(db);
+  await ensureCommsSchema(db);
   startCronScheduler();
 }).catch(err => {
   console.error("❌ PostgreSQL ProTalk Database initialization failed:", err);
@@ -200,6 +224,7 @@ app.use("/api/offboarding", offboardingRouter);
 app.use("/api/motivation", motivationRouter);
 app.use("/api/push", pushRouter);
 registerRevisorProactiveRoutes(app, getDb);
+registerCommsRoutes(app, getDb);
 
 import { robokassaRouter } from "./src/server/robokassa/robokassaRoutes";
 import { initRobokassaDatabase } from "./src/server/robokassa/robokassaConfig";
@@ -5642,39 +5667,42 @@ app.post("/api/reports", async (req, res) => {
       }, db).catch(console.error);
     }
 
-    // Insert internal notification for manager/director: report needs review
-    try {
-      const notifId = 'notif-rev-req-' + reportId + '-' + Date.now();
-      const targetDirId = finalDirectorId || '91827364501';
-      const repReviewTitle = 'Требуется проверка отчета';
-      const repReviewMsg = `Сотрудник ${employeeName || 'Сотрудник'} сдал отчет «${templateTitle || 'Рапорт'}». Необходима проверка.`;
-      const repReviewUrl = `/cabinet/raport/review/${reportId}`;
-      await db.run(`
-        INSERT INTO notifications (id, user_id, userId, title, message, type, isRead, timestamp, actionUrl, reportId)
-        VALUES (?, ?, ?, ?, ?, 'REPORT_NEED_REVIEW', 0, CURRENT_TIMESTAMP, ?, ?)
-      `, [
-        notifId,
-        targetDirId,
-        targetDirId,
-        repReviewTitle,
-        repReviewMsg,
-        repReviewUrl,
-        reportId
-      ]);
-      sendWebPushToUser(db, String(targetDirId), {
-        title: repReviewTitle,
-        body: repReviewMsg,
-        url: repReviewUrl,
-        tag: `rep_need_review_${reportId}`,
-        category: 'reports'
-      }).catch(() => {});
-    } catch (notifErr) {
-      console.warn("Could not insert review requested notification:", notifErr);
+    // Insert internal notification for manager/director: report needs review (only on newly submitted reports)
+    const isSilentSync = Boolean(req.body.isSync || req.body.skipTelegram || existing);
+    if (!isSilentSync) {
+      try {
+        const notifId = 'notif-rev-req-' + reportId + '-' + Date.now();
+        const targetDirId = finalDirectorId || '91827364501';
+        const repReviewTitle = 'Требуется проверка отчета';
+        const repReviewMsg = `Сотрудник ${employeeName || 'Сотрудник'} сдал отчет «${templateTitle || 'Рапорт'}». Необходима проверка.`;
+        const repReviewUrl = `/cabinet/raport/review/${reportId}`;
+        await db.run(`
+          INSERT INTO notifications (id, user_id, userId, title, message, type, isRead, timestamp, actionUrl, reportId)
+          VALUES (?, ?, ?, ?, ?, 'REPORT_NEED_REVIEW', 0, CURRENT_TIMESTAMP, ?, ?)
+        `, [
+          notifId,
+          targetDirId,
+          targetDirId,
+          repReviewTitle,
+          repReviewMsg,
+          repReviewUrl,
+          reportId
+        ]);
+        sendWebPushToUser(db, String(targetDirId), {
+          title: repReviewTitle,
+          body: repReviewMsg,
+          url: repReviewUrl,
+          tag: `rep_need_review_${reportId}`,
+          category: 'reports'
+        }).catch(() => {});
+      } catch (notifErr) {
+        console.warn("Could not insert review requested notification:", notifErr);
+      }
     }
 
-    // Calculate daily motivation & dispatch personal notification + Telegram DM
+    // Calculate daily motivation & dispatch personal notification + Telegram DM (skip during state sync or already-submitted updates)
     let motivationAccrual: any = null;
-    if (!req.body.skipMotivation) {
+    if (!req.body.skipMotivation && !req.body.isSync) {
       const clientOrigin = req.body.origin || req.headers.origin || (req.headers.host ? `${req.protocol || 'https'}://${req.headers.host}` : undefined);
       motivationAccrual = await processReportMotivationAndNotify(db, {
         id: reportId,
@@ -5689,7 +5717,7 @@ app.post("/api/reports", async (req, res) => {
         director_id: finalDirectorId,
         timestamp: timestamp || new Date().toISOString(),
         answers
-      }, clientOrigin);
+      }, clientOrigin, { skipNotifications: Boolean(existing || req.body.skipTelegram) });
     }
 
     res.json({ success: true, id: reportId, motivationAccrual });
@@ -5778,6 +5806,13 @@ app.post("/api/reports/:id/accept-plan", async (req, res) => {
         INSERT INTO notifications (id, userId, title, message, type, isRead, timestamp)
         VALUES (?, ?, ?, ?, 'PLAN_ACCEPTED', 0, CURRENT_TIMESTAMP)
       `, [notifId, supervisorId, notifTitle, notifMsg]);
+      sendWebPushToUser(db, String(supervisorId), {
+        title: notifTitle,
+        body: notifMsg,
+        url: '/cabinet/raport/calendar',
+        tag: `plan-accepted-${report.id}`,
+        category: 'reports'
+      }).catch(() => {});
     } catch (ne) {
       console.warn("Could not insert plan accepted notification:", ne);
     }
@@ -9359,26 +9394,33 @@ app.post("/api/company/my", async (req, res) => {
     await db.run(`UPDATE users SET company = ?, company_id = ? WHERE id = ?`, [companyName, compId, actualDirectorId]);
     await db.run(`UPDATE users SET company = ?, company_id = ? WHERE director_id = ? AND id != ?`, [companyName, compId, actualDirectorId, actualDirectorId]);
 
-    // Also synchronize user's JSON state file so that client cache and state loader don't override with stale company name
-    const stateFile = path.join(process.cwd(), `state_${actualDirectorId}.json`);
-    if (fs.existsSync(stateFile)) {
-      try {
-        const fileContent = JSON.parse(fs.readFileSync(stateFile, 'utf-8'));
-        fileContent.company = {
-          ...(fileContent.company || {}),
-          id: compId,
-          director_id: actualDirectorId,
-          name: companyName,
-          description: companyDesc,
-          products: companyProducts,
-          websites: companyWebsites,
-          product_description: finalProductDesc,
-          work_system_description: finalWorkSysDesc
-        };
-        fs.writeFileSync(stateFile, JSON.stringify(fileContent, null, 2), 'utf-8');
-      } catch (stErr) {
-        console.warn('Failed to update state file for company:', stErr);
+    // Also synchronize stored cabinet state in PostgreSQL so client cache and state loader don't override with stale company name
+    try {
+      const sanitizedDirector = String(actualDirectorId).replace(/[^a-zA-Z0-9_-]/g, '');
+      if (sanitizedDirector) {
+        await ensureCabinetStatesTable(db);
+        const stateRow = await db.get(`SELECT state_json FROM cabinet_states WHERE id = ?`, [`state_${sanitizedDirector}`]);
+        if (stateRow?.state_json) {
+          const parsedState = JSON.parse(stateRow.state_json);
+          parsedState.company = {
+            ...(parsedState.company || {}),
+            id: compId,
+            director_id: actualDirectorId,
+            name: companyName,
+            description: companyDesc,
+            products: companyProducts,
+            websites: companyWebsites,
+            product_description: finalProductDesc,
+            work_system_description: finalWorkSysDesc
+          };
+          await db.run(
+            `UPDATE cabinet_states SET state_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+            [JSON.stringify(parsedState), `state_${sanitizedDirector}`]
+          );
+        }
       }
+    } catch (stErr) {
+      console.warn('Failed to update PostgreSQL cabinet_states for company:', stErr);
     }
 
     // Ensure the director is immediately persisted into the employees table as well
@@ -11361,43 +11403,55 @@ app.get("/api/telegram/employees", async (req, res) => {
   }
 });
 
-// API: State persistence (saving and loading user data)
-app.get("/api/state/load", (req, res) => {
+// API: State persistence (saving and loading user cabinet state in PostgreSQL)
+app.get("/api/state/load", async (req, res) => {
   try {
+    const db = await getDb();
+    await ensureCabinetStatesTable(db);
     const userId = (req.query.userId || req.query.user_id) as string;
-    let targetPath = STATE_FILE_PATH;
-    if (userId && String(userId).trim().length > 0) {
-      const sanitized = String(userId).replace(/[^a-zA-Z0-9_-]/g, '');
-      const userPath = path.join(process.cwd(), `state_${sanitized}.json`);
-      if (fs.existsSync(userPath)) {
-        targetPath = userPath;
-      } else {
-        return res.json({ status: "not_found", message: "No stored state found for user" });
-      }
+    const sanitized = userId && String(userId).trim().length > 0
+      ? String(userId).replace(/[^a-zA-Z0-9_-]/g, '')
+      : '';
+    const stateId = sanitized ? `state_${sanitized}` : 'default';
+
+    const row = await db.get(`SELECT state_json FROM cabinet_states WHERE id = ?`, [stateId]);
+    if (row?.state_json) {
+      return res.json(JSON.parse(row.state_json));
     }
-    if (fs.existsSync(targetPath)) {
-      const rawData = fs.readFileSync(targetPath, "utf-8");
-      return res.json(JSON.parse(rawData));
-    }
-    return res.json({ status: "not_found", message: "No stored state found" });
+    return res.json({
+      status: "not_found",
+      message: sanitized ? "No stored state found for user" : "No stored state found"
+    });
   } catch (error: any) {
-    console.error("Error reading state.json:", error);
+    console.error("Error reading cabinet state from PostgreSQL:", error);
     return res.status(500).json({ error: "Failed to read data state" });
   }
 });
 
-app.post("/api/state/save", (req, res) => {
+app.post("/api/state/save", async (req, res) => {
   try {
+    const db = await getDb();
+    await ensureCabinetStatesTable(db);
     const userId = (req.body?.userId || req.query.userId || req.query.user_id) as string;
-    let targetPath = STATE_FILE_PATH;
-    if (userId && String(userId).trim().length > 0) {
-      const sanitized = String(userId).replace(/[^a-zA-Z0-9_-]/g, '');
-      targetPath = path.join(process.cwd(), `state_${sanitized}.json`);
-    }
-    fs.writeFileSync(targetPath, JSON.stringify(req.body, null, 2), "utf-8");
+    const sanitized = userId && String(userId).trim().length > 0
+      ? String(userId).replace(/[^a-zA-Z0-9_-]/g, '')
+      : '';
+    const stateId = sanitized ? `state_${sanitized}` : 'default';
+    const userKey = sanitized || 'default';
+    const serialized = JSON.stringify(req.body ?? {});
+
+    await db.run(
+      `INSERT INTO cabinet_states (id, user_id, state_json, updated_at)
+       VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT (id) DO UPDATE SET
+         user_id = EXCLUDED.user_id,
+         state_json = EXCLUDED.state_json,
+         updated_at = CURRENT_TIMESTAMP`,
+      [stateId, userKey, serialized]
+    );
     return res.json({ success: true });
   } catch (error: any) {
-    console.error("Error writing state.json:", error);
+    console.error("Error saving cabinet state to PostgreSQL:", error);
     return res.status(500).json({ error: "Failed to save data state" });
   }
 });
@@ -13019,6 +13073,72 @@ app.delete("/api/blog/posts/:id", async (req, res) => {
   }
 });
 
+// Safe image proxy so cross-origin blog images can be copied to clipboard as PNG
+app.get("/api/blog/image-proxy", async (req, res) => {
+  try {
+    const rawUrl = String(req.query.url || '').trim();
+    if (!rawUrl) {
+      return res.status(400).json({ success: false, error: "URL изображения не передан" });
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      return res.status(400).json({ success: false, error: "Некорректный URL" });
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      return res.status(400).json({ success: false, error: "Допустимы только HTTP/HTTPS ссылки" });
+    }
+    const host = parsed.hostname.toLowerCase();
+    const isPrivateHost =
+      host === 'localhost' ||
+      host === '0.0.0.0' ||
+      host === '::1' ||
+      host.endsWith('.local') ||
+      host.endsWith('.internal') ||
+      /^127\./.test(host) ||
+      /^10\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^169\.254\./.test(host) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+      /^(fc|fd|fe80)/i.test(host);
+    if (isPrivateHost) {
+      return res.status(403).json({ success: false, error: "Запрещенный адрес" });
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const upstream = await fetch(parsed.toString(), {
+        signal: controller.signal,
+        headers: { Accept: 'image/*,*/*;q=0.8' }
+      });
+      if (!upstream.ok) {
+        return res.status(upstream.status).json({ success: false, error: "Не удалось получить изображение" });
+      }
+      const contentType = upstream.headers.get('content-type') || '';
+      if (!contentType.toLowerCase().startsWith('image/')) {
+        return res.status(400).json({ success: false, error: "Ссылка не ведет на изображение" });
+      }
+      const len = Number(upstream.headers.get('content-length') || 0);
+      if (len > 15 * 1024 * 1024) {
+        return res.status(413).json({ success: false, error: "Файл слишком большой" });
+      }
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      if (buf.length > 15 * 1024 * 1024) {
+        return res.status(413).json({ success: false, error: "Файл слишком большой" });
+      }
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      return res.send(buf);
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch (error: any) {
+    return res.status(502).json({ success: false, error: error?.message || "Ошибка загрузки изображения" });
+  }
+});
+
 // AI Article Generator Endpoint (~5000 words markdown + JSON automation)
 app.post("/api/blog/generate", async (req, res) => {
   try {
@@ -13411,6 +13531,61 @@ app.post("/api/system/version", async (req, res) => {
   }
 });
 
+// Yandex.Metrika counter IDs configuration API (supports multiple counters)
+app.get("/api/system/metrika", async (_req, res) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  try {
+    const db = await getDb();
+    await db.run("CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
+    const row = await db.get("SELECT value FROM system_settings WHERE key = 'yandex_metrika_ids'").catch(() => null);
+    const envRaw = [
+      process.env.YANDEX_METRIKA_IDS,
+      process.env.YANDEX_METRIKA_ID,
+      process.env.VITE_YANDEX_METRIKA_IDS,
+      process.env.VITE_YANDEX_METRIKA_ID
+    ].filter(Boolean).join(",");
+    const rawCombined = [envRaw, row?.value].filter(Boolean).join(",");
+    const ids = Array.from(
+      new Set(
+        rawCombined
+          .split(/[\s,;]+/)
+          .map((s) => s.trim())
+          .filter((s) => /^\d{5,12}$/.test(s))
+      )
+    );
+    return res.json({ success: true, rawIds: String(row?.value || envRaw || ""), ids });
+  } catch (err: any) {
+    return res.json({ success: true, rawIds: "", ids: [] });
+  }
+});
+
+app.post("/api/system/metrika", async (req, res) => {
+  try {
+    const { ids } = req.body || {};
+    const rawStr = Array.isArray(ids) ? ids.join(",") : String(ids || "");
+    const cleanIds = Array.from(
+      new Set(
+        rawStr
+          .split(/[\s,;]+/)
+          .map((s) => s.trim())
+          .filter((s) => /^\d{5,12}$/.test(s))
+      )
+    );
+    const valueToStore = cleanIds.join(",");
+    const db = await getDb();
+    await db.run("CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
+    await db.run(
+      `INSERT INTO system_settings (key, value, updated_at) VALUES ('yandex_metrika_ids', ?, CURRENT_TIMESTAMP)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`,
+      [valueToStore]
+    );
+    emitDbChange('system_settings', 'update', 'yandex_metrika_ids');
+    return res.json({ success: true, rawIds: valueToStore, ids: cleanIds });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Integration with Vite (dev) or static dist serving (production)
 process.on("unhandledRejection", (reason) => {
   console.error("⚠️ Unhandled promise rejection in background task:", reason);
@@ -13452,6 +13627,7 @@ async function initServer() {
 
     const isProdMode = detectProductionMode();
     const httpServer = http.createServer(app);
+    attachCommsWebSocketServer(httpServer);
 
     if (!isProdMode) {
       const { createServer: createViteServer } = await import("vite");

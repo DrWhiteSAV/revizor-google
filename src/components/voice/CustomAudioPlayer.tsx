@@ -95,8 +95,8 @@ export const CustomAudioPlayer: React.FC<CustomAudioPlayerProps> = ({
   return (
     <div className={`flex items-center gap-2.5 p-2.5 rounded-2xl border backdrop-blur-md shadow-md transition-colors ${
       isLightTheme
-        ? "bg-amber-100/70 border-amber-400/80 text-amber-950"
-        : "bg-black/40 border-amber-400/40 text-amber-100"
+        ? "bg-[#FAF6EC]/85 border-amber-800/40 text-amber-950"
+        : "bg-amber-400/10 border-amber-400/45 text-amber-50 shadow-[0_0_20px_rgba(244,238,142,0.12)]"
     }`}>
       <audio
         ref={audioRef}

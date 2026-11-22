@@ -1,13 +1,21 @@
 import React from 'react';
+import { CopyableBlogImage } from './blog/CopyableBlogImage';
 
 interface MarkdownRendererProps {
   content: string;
   theme?: 'dark' | 'light';
   isLightTheme?: boolean;
   excludeImages?: string[];
+  enableImageCopy?: boolean;
 }
 
-export default function MarkdownRenderer({ content, theme, isLightTheme: isLightProp, excludeImages = [] }: MarkdownRendererProps) {
+export default function MarkdownRenderer({
+  content,
+  theme,
+  isLightProp,
+  excludeImages = [],
+  enableImageCopy = true,
+}: MarkdownRendererProps & { isLightProp?: boolean }) {
   if (!content) return null;
   const isLight = isLightProp ?? theme === 'light';
 
@@ -71,6 +79,18 @@ export default function MarkdownRenderer({ content, theme, isLightTheme: isLight
             return null;
           }
           seenImages.add(normUrl);
+          if (enableImageCopy) {
+            return (
+              <CopyableBlogImage
+                key={i}
+                src={match[2]}
+                alt={match[1] || 'Иллюстрация статьи'}
+                caption={match[1] || undefined}
+                isLight={isLight}
+                variant="inline"
+              />
+            );
+          }
           return (
             <span
               key={i}
@@ -166,31 +186,44 @@ export default function MarkdownRenderer({ content, theme, isLightTheme: isLight
           continue;
         }
         seenImages.add(normUrl);
-        elements.push(
-          <figure
-            key={`fig-${blockIndex}-${i}`}
-            className={`my-6 rounded-2xl overflow-hidden border shadow-xl ${
-              isLight ? 'border-amber-900/20 bg-amber-50/60' : 'border-amber-400/35 bg-[#1A0F02]/80'
-            }`}
-          >
-            <img
+        if (enableImageCopy) {
+          elements.push(
+            <CopyableBlogImage
+              key={`fig-${blockIndex}-${i}`}
               src={standaloneImg[2]}
               alt={standaloneImg[1] || 'Иллюстрация ИИ Ревизор и ИИ Рапорт'}
-              loading="lazy"
-              className="w-full h-auto max-h-[480px] object-cover"
-              referrerPolicy="no-referrer"
+              caption={standaloneImg[1] || undefined}
+              isLight={isLight}
+              variant="figure"
             />
-            {standaloneImg[1] && (
-              <figcaption
-                className={`text-center text-sm py-2.5 px-4 italic border-t ${
-                  isLight ? 'text-stone-700 border-amber-900/10' : 'text-amber-200/85 border-amber-400/20'
-                }`}
-              >
-                {standaloneImg[1]}
-              </figcaption>
-            )}
-          </figure>
-        );
+          );
+        } else {
+          elements.push(
+            <figure
+              key={`fig-${blockIndex}-${i}`}
+              className={`my-6 rounded-2xl overflow-hidden border shadow-xl ${
+                isLight ? 'border-amber-900/20 bg-amber-50/60' : 'border-amber-400/35 bg-[#1A0F02]/80'
+              }`}
+            >
+              <img
+                src={standaloneImg[2]}
+                alt={standaloneImg[1] || 'Иллюстрация ИИ Ревизор и ИИ Рапорт'}
+                loading="lazy"
+                className="w-full h-auto max-h-[480px] object-cover"
+                referrerPolicy="no-referrer"
+              />
+              {standaloneImg[1] && (
+                <figcaption
+                  className={`text-center text-sm py-2.5 px-4 italic border-t ${
+                    isLight ? 'text-stone-700 border-amber-900/10' : 'text-amber-200/85 border-amber-400/20'
+                  }`}
+                >
+                  {standaloneImg[1]}
+                </figcaption>
+              )}
+            </figure>
+          );
+        }
         continue;
       }
 
@@ -204,22 +237,34 @@ export default function MarkdownRenderer({ content, theme, isLightTheme: isLight
         }
         seenImages.add(normUrl);
         const altMatch = trimmed.match(/alt=["']([^"']*)["']/i);
-        elements.push(
-          <figure
-            key={`rawfig-${blockIndex}-${i}`}
-            className={`my-6 rounded-2xl overflow-hidden border shadow-xl ${
-              isLight ? 'border-amber-900/20 bg-amber-50/60' : 'border-amber-400/35 bg-[#1A0F02]/80'
-            }`}
-          >
-            <img
+        if (enableImageCopy) {
+          elements.push(
+            <CopyableBlogImage
+              key={`rawfig-${blockIndex}-${i}`}
               src={rawImgMatch[1]}
               alt={altMatch ? altMatch[1] : 'Изображение публикации'}
-              loading="lazy"
-              className="w-full h-auto max-h-[480px] object-cover"
-              referrerPolicy="no-referrer"
+              isLight={isLight}
+              variant="figure"
             />
-          </figure>
-        );
+          );
+        } else {
+          elements.push(
+            <figure
+              key={`rawfig-${blockIndex}-${i}`}
+              className={`my-6 rounded-2xl overflow-hidden border shadow-xl ${
+                isLight ? 'border-amber-900/20 bg-amber-50/60' : 'border-amber-400/35 bg-[#1A0F02]/80'
+              }`}
+            >
+              <img
+                src={rawImgMatch[1]}
+                alt={altMatch ? altMatch[1] : 'Изображение публикации'}
+                loading="lazy"
+                className="w-full h-auto max-h-[480px] object-cover"
+                referrerPolicy="no-referrer"
+              />
+            </figure>
+          );
+        }
         continue;
       }
 

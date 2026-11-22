@@ -135,6 +135,8 @@ router.get("/by-route", async (req, res) => {
         matched = allPosts.find((p: any) => p.id === "acad-fill-report" || p.target_route === "fill_report");
       } else if (route.includes("ship")) {
         matched = allPosts.find((p: any) => p.id === "acad-ship");
+      } else if (route.includes("comms") || route.includes("chat") || route.includes("video")) {
+        matched = allPosts.find((p: any) => p.id === "acad-comms" || p.target_route === "comms");
       }
     }
 

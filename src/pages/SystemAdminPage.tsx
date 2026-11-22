@@ -6,13 +6,15 @@ import { SystemAdminGallery } from '../components/gallery/SystemAdminGallery';
 import { SystemAdminProxySection } from '../components/SystemAdminProxySection';
 import { SystemAdminGoogleSheetsLoggingCard } from '../components/raport/SystemAdminGoogleSheetsLoggingCard';
 import { AcademyAdminEditor } from '../components/academy/AcademyAdminEditor';
+import { SystemAdminModerationPanel } from '../components/comms/SystemAdminModerationPanel';
 import { broadcastAppVersionUpdate } from '../hooks/useAppVersion';
+import { loadAndInitYandexMetrika, resetYandexMetrikaCache } from '../utils/seo/yandexMetrika';
 import { 
   Database, Table, Plus, Edit2, Trash2, Search, ArrowUpDown, ArrowUp, ArrowDown, 
   RefreshCw, Zap, Clock, ShieldCheck, Check, X, AlertCircle, Play, Server,
   LayoutGrid, TableProperties, BarChart3, Package, Download, Upload, FileSpreadsheet,
   Sun, Moon, Lock, LogOut, CheckCircle2, TrendingUp, DollarSign, Award, Layers, BookOpen, FileText, HardDrive,
-  Globe, GraduationCap
+  Globe, GraduationCap, MessageSquare
 } from 'lucide-react';
 
 interface SystemAdminPageProps {
@@ -144,6 +146,58 @@ export default function SystemAdminPage({ currentPath, onNavigate }: SystemAdmin
   const [isVersionModalOpen, setIsVersionModalOpen] = useState<boolean>(false);
   const [versionSaving, setVersionSaving] = useState<boolean>(false);
 
+  // Yandex.Metrika Counters State
+  const [metrikaIds, setMetrikaIds] = useState<number[]>([]);
+  const [metrikaInput, setMetrikaInput] = useState<string>('');
+  const [isMetrikaModalOpen, setIsMetrikaModalOpen] = useState<boolean>(false);
+  const [metrikaSaving, setMetrikaSaving] = useState<boolean>(false);
+
+  const fetchMetrikaSettings = async () => {
+    try {
+      const res = await fetch(`/api/system/metrika?_t=${Date.now()}`, { cache: 'no-store' });
+      const data = await res.json();
+      if (data?.success) {
+        const list = Array.isArray(data.ids) ? data.ids.map(Number).filter(Boolean) : [];
+        setMetrikaIds(list);
+        setMetrikaInput(String(data.rawIds || list.join(', ')));
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleSaveMetrika = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      setMetrikaSaving(true);
+      const res = await fetch('/api/system/metrika', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: metrikaInput.trim() })
+      });
+      const data = await res.json();
+      if (data?.success) {
+        const savedList = Array.isArray(data.ids) ? data.ids.map(Number).filter(Boolean) : [];
+        setMetrikaIds(savedList);
+        setMetrikaInput(savedList.join(', '));
+        resetYandexMetrikaCache();
+        loadAndInitYandexMetrika();
+        setIsMetrikaModalOpen(false);
+        showToast(
+          savedList.length > 0
+            ? `Счетчики Яндекс.Метрики сохранены (${savedList.join(', ')})`
+            : 'Список счетчиков Яндекс.Метрики очищен'
+        );
+      } else {
+        showToast(data?.error || 'Ошибка сохранения счетчиков Яндекс.Метрики');
+      }
+    } catch (err: any) {
+      showToast('Ошибка сети: ' + err.message);
+    } finally {
+      setMetrikaSaving(false);
+    }
+  };
+
   const fetchAppVersion = async () => {
     try {
       const res = await fetch(`/api/system/version?_t=${Date.now()}`, { cache: 'no-store' });
@@ -208,6 +262,7 @@ export default function SystemAdminPage({ currentPath, onNavigate }: SystemAdmin
     fetchTriggers();
     fetchCronJobs();
     fetchAppVersion();
+    fetchMetrikaSettings();
   }, []);
 
   useEffect(() => {
@@ -342,6 +397,7 @@ export default function SystemAdminPage({ currentPath, onNavigate }: SystemAdmin
   else if (path === '/system-admin/gallery' || path.startsWith('/system-admin/gallery')) activeNavPath = '/system-admin/gallery';
   else if (path === '/system-admin/academy' || path.startsWith('/system-admin/academy')) activeNavPath = '/system-admin/academy';
   else if (path === '/system-admin/protalk' || path === '/system-admin/logging' || path === '/system-admin/sheets') activeNavPath = '/system-admin/protalk';
+  else if (path === '/system-admin/moderation' || path.startsWith('/system-admin/moderation')) activeNavPath = '/system-admin/moderation';
   else activeNavPath = '/system-admin';
 
   // Auto-select corresponding domain PostgreSQL BD ProTalk table when navigating between pages
@@ -366,12 +422,15 @@ export default function SystemAdminPage({ currentPath, onNavigate }: SystemAdmin
       fetchTableData('academy_posts');
     } else if (activeNavPath === '/system-admin/protalk') {
       fetchTableData('logs');
+    } else if (activeNavPath === '/system-admin/moderation') {
+      fetchTableData('chat_moderation_config');
     }
   }, [activeNavPath]);
 
   const navItems = [
     { path: '/system-admin', label: `Таблицы PostgreSQL BD ProTalk (${tables.length})`, icon: Table },
     { path: '/system-admin/academy', label: 'Академия & Инструкции', icon: GraduationCap },
+    { path: '/system-admin/moderation', label: 'Модерация чатов (763)', icon: MessageSquare },
     { path: '/system-admin/protalk', label: 'Логирование функций & Google Таблицы', icon: FileSpreadsheet },
     { path: '/system-admin/triggers', label: `Триггеры БД (${triggers.length})`, icon: Zap },
     { path: '/system-admin/cron', label: `Крон-задачи (${cronJobs.length})`, icon: Clock },
@@ -1040,6 +1099,21 @@ export default function SystemAdminPage({ currentPath, onNavigate }: SystemAdmin
             <span>{appVersion}</span>
           </button>
 
+          {/* Yandex.Metrika Counters Button */}
+          <button
+            onClick={() => { setMetrikaInput(metrikaIds.join(', ')); setIsMetrikaModalOpen(true); }}
+            className={`px-3 py-2 rounded-xl border text-sm font-sans font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-md active:scale-95 ${
+              isDarkTheme 
+                ? 'bg-amber-400/10 border-amber-400/50 text-[#F4EE8E] hover:bg-amber-400/20' 
+                : 'bg-amber-100 border-amber-800/30 text-amber-950 hover:bg-amber-200'
+            }`}
+            title="Настройка счетчиков Яндекс.Метрики"
+            id="sysadmin-metrika-btn"
+          >
+            <BarChart3 size={15} className="text-[#D4AF37]" />
+            <span>Метрика{metrikaIds.length > 0 ? ` (${metrikaIds.length})` : ''}</span>
+          </button>
+
           <button
             onClick={toggleTheme}
             className={`p-2.5 rounded-xl border transition-all cursor-pointer flex items-center justify-center shadow-md active:scale-95 ${
@@ -1317,6 +1391,7 @@ export default function SystemAdminPage({ currentPath, onNavigate }: SystemAdmin
             <BlogPostEditorPage 
               onNavigate={(p) => handleSubNavigate(p)} 
               currentUser={null}
+              isDarkTheme={isDarkTheme}
             />
           </div>
 
@@ -1337,6 +1412,13 @@ export default function SystemAdminPage({ currentPath, onNavigate }: SystemAdmin
         <div className="space-y-6">
           <AcademyAdminEditor theme={isDarkTheme ? 'dark' : 'light'} />
           {renderEmbeddedTableEditor('Таблица статей академии (academy_posts) в PostgreSQL BD ProTalk')}
+        </div>
+      )}
+
+      {/* PAGE 11: `/system-admin/moderation` -> Chat Moderation (Function 763) */}
+      {activeNavPath === '/system-admin/moderation' && (
+        <div className="space-y-6">
+          <SystemAdminModerationPanel isDarkTheme={isDarkTheme} onSuccess={showToast} />
         </div>
       )}
 
@@ -1920,6 +2002,76 @@ export default function SystemAdminPage({ currentPath, onNavigate }: SystemAdmin
                   }`}
                 >
                   {versionSaving ? 'Сохранение...' : 'Зафиксировать версию'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Yandex.Metrika Counters Modal */}
+      {isMetrikaModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md animate-in fade-in duration-200">
+          <div className={`max-w-md w-full rounded-3xl p-6 border shadow-2xl backdrop-blur-xl ${
+            isDarkTheme ? 'bg-[#1A0F02]/95 border-amber-400/50 text-amber-100' : 'bg-[#FFFBF5]/95 border-amber-900/30 text-amber-950'
+          }`}>
+            <div className="flex items-center justify-between pb-3 border-b border-amber-500/20 mb-4">
+              <h3 className={`text-base font-bold flex items-center gap-2 ${
+                isDarkTheme ? 'text-[#F4EE8E]' : 'text-amber-950'
+              }`}>
+                <BarChart3 size={18} className="text-[#D4AF37]" />
+                <span>Счетчики Яндекс.Метрики</span>
+              </h3>
+              <button 
+                type="button"
+                onClick={() => setIsMetrikaModalOpen(false)}
+                className="p-1.5 rounded-lg opacity-70 hover:opacity-100 transition-opacity cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveMetrika} className="space-y-4">
+              <p className="text-sm opacity-85 leading-relaxed font-sans">
+                Укажите один или несколько ID счетчиков Яндекс.Метрики через запятую. Они автоматически подключатся на лендинге, в блоге, в Академии и при переходах по SPA-маршрутам, ускоряя обход сайта роботами Яндекса.
+              </p>
+
+              <div>
+                <label className="block text-sm font-bold mb-1.5">ID счетчиков (через запятую):</label>
+                <input
+                  type="text"
+                  value={metrikaInput}
+                  onChange={(e) => setMetrikaInput(e.target.value)}
+                  placeholder="Например: 98765432, 99112233"
+                  className={`w-full p-3 rounded-xl text-sm font-mono focus:outline-none transition-colors border ${
+                    isDarkTheme 
+                      ? 'bg-[#140A01] border-amber-400/60 text-amber-100 placeholder:text-amber-300/40 focus:border-amber-300' 
+                      : 'bg-white border-amber-800/30 text-amber-950 placeholder:text-amber-800/50 focus:border-amber-600'
+                  }`}
+                  autoFocus
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-amber-500/20">
+                <button
+                  type="button"
+                  onClick={() => setIsMetrikaModalOpen(false)}
+                  className={`px-4 py-2.5 rounded-xl border text-sm font-bold cursor-pointer ${
+                    isDarkTheme ? 'border-amber-400/30 text-amber-200 hover:bg-amber-400/10' : 'border-amber-800/30 text-amber-950 hover:bg-amber-100'
+                  }`}
+                >
+                  Отмена
+                </button>
+                <button
+                  type="submit"
+                  disabled={metrikaSaving}
+                  className={`px-5 py-2.5 rounded-xl text-sm font-bold transition-all shadow-md active:scale-95 cursor-pointer disabled:opacity-50 ${
+                    isDarkTheme 
+                      ? 'bg-gradient-to-r from-[#F4EE8E] via-[#E7C768] to-[#D99E41] text-amber-950 hover:brightness-110 shadow-amber-500/20' 
+                      : 'bg-gradient-to-r from-[#D4AF37] to-[#B38C1E] text-amber-950 hover:brightness-105'
+                  }`}
+                >
+                  {metrikaSaving ? 'Сохранение...' : 'Сохранить счетчики'}
                 </button>
               </div>
             </form>

@@ -64,8 +64,10 @@ export const CabinetCopilot: React.FC<CabinetCopilotProps> = ({
   ]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isLoading]);
+    if (isOpen) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [messages, isLoading, isOpen]);
 
   const handleTakeScreenshot = async () => {
     try {

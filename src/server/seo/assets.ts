@@ -98,6 +98,15 @@ export function handleSquarePng(size: 48 | 180 | 192 | 512, maskable = false) {
   };
 }
 
+function escapeXmlAsset(str: string): string {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
 export function handleSiteManifest(req: Request, res: Response): void {
   const origin = resolveSiteOrigin(req);
   const manifest = {
@@ -109,10 +118,12 @@ export function handleSiteManifest(req: Request, res: Response): void {
     start_url: '/cabinet',
     scope: '/',
     display: 'standalone',
+    display_override: ['standalone', 'minimal-ui'],
     orientation: 'portrait-primary',
     background_color: '#140A01',
     theme_color: '#140A01',
     lang: 'ru',
+    categories: ['business', 'productivity'],
     icons: [
       {
         src: `${origin}/favicon-48.png`,
@@ -121,19 +132,31 @@ export function handleSiteManifest(req: Request, res: Response): void {
         purpose: 'any',
       },
       {
-        src: `${origin}/favicon-192.png`,
+        src: `${origin}/favicon-120.png`,
+        sizes: '120x120',
+        type: 'image/png',
+        purpose: 'any',
+      },
+      {
+        src: `${origin}/pwa-192x192.png`,
         sizes: '192x192',
         type: 'image/png',
         purpose: 'any',
       },
       {
-        src: `${origin}/favicon-512.png`,
+        src: `${origin}/pwa-512x512.png`,
         sizes: '512x512',
         type: 'image/png',
         purpose: 'any',
       },
       {
-        src: `${origin}/pwa-maskable-512.png`,
+        src: `${origin}/pwa-maskable-192x192.png`,
+        sizes: '192x192',
+        type: 'image/png',
+        purpose: 'maskable',
+      },
+      {
+        src: `${origin}/pwa-maskable-512x512.png`,
         sizes: '512x512',
         type: 'image/png',
         purpose: 'maskable',
@@ -145,30 +168,184 @@ export function handleSiteManifest(req: Request, res: Response): void {
         purpose: 'any',
       },
     ],
+    screenshots: [
+      {
+        src: `${origin}/pwa-screenshot-mobile.png`,
+        sizes: '540x720',
+        type: 'image/png',
+        form_factor: 'narrow',
+        label: 'Мобильный кабинет, расчет мотивации и push-уведомления',
+      },
+      {
+        src: `${origin}/pwa-screenshot-wide.png`,
+        sizes: '1280x720',
+        type: 'image/png',
+        form_factor: 'wide',
+        label: 'Командный кабинет ИИ Ревизор & ИИ Рапорт',
+      },
+    ],
     shortcuts: [
       {
         name: 'Календарь отчетов',
         short_name: 'Календарь',
         url: '/cabinet/raport/calendar',
-        icons: [{ src: `${origin}/favicon-192.png`, sizes: '192x192', type: 'image/png' }],
+        icons: [{ src: `${origin}/pwa-192x192.png`, sizes: '192x192', type: 'image/png' }],
       },
       {
         name: 'Диаграмма Ганта',
         short_name: 'Гант',
         url: '/cabinet/revisor/gantt',
-        icons: [{ src: `${origin}/favicon-192.png`, sizes: '192x192', type: 'image/png' }],
+        icons: [{ src: `${origin}/pwa-192x192.png`, sizes: '192x192', type: 'image/png' }],
       },
       {
         name: 'Сдать рапорт',
         short_name: 'Рапорт',
         url: '/cabinet/raport',
-        icons: [{ src: `${origin}/favicon-192.png`, sizes: '192x192', type: 'image/png' }],
+        icons: [{ src: `${origin}/pwa-192x192.png`, sizes: '192x192', type: 'image/png' }],
       },
     ],
   };
   res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
   res.setHeader('Cache-Control', 'public, max-age=3600');
   res.send(JSON.stringify(manifest, null, 2));
+}
+
+export function handleYandexTableau(req: Request, res: Response): void {
+  const origin = resolveSiteOrigin(req);
+  const tableau = {
+    version: '1.0',
+    api_version: 3,
+    layout: {
+      logo: `${origin}/yandex-tableau-logo.png`,
+      color: '#140A01',
+      show_title: true,
+    },
+  };
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.send(JSON.stringify(tableau, null, 2));
+}
+
+export function handleBrowserConfigXml(_req: Request, res: Response): void {
+  const xml = `<?xml version="1.0" encoding="utf-8"?>
+<browserconfig>
+  <msapplication>
+    <tile>
+      <square70x70logo src="/mstile-70x70.png"/>
+      <square150x150logo src="/mstile-150x150.png"/>
+      <wide310x150logo src="/mstile-310x150.png"/>
+      <square310x310logo src="/mstile-310x310.png"/>
+      <TileColor>#140A01</TileColor>
+    </tile>
+  </msapplication>
+</browserconfig>`;
+  res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.send(xml);
+}
+
+function toSafeRfc822(raw?: string | number | Date | null): string {
+  if (raw) {
+    const dt = new Date(raw);
+    if (!Number.isNaN(dt.getTime())) return dt.toUTCString();
+  }
+  return new Date().toUTCString();
+}
+
+export async function handleRssXml(
+  req: Request,
+  res: Response,
+  getDb: () => Promise<PgDbAdapter>
+): Promise<void> {
+  try {
+    const origin = resolveSiteOrigin(req);
+    const db = await getDb();
+    const posts = await db
+      .all('SELECT id, slug, title, category, summary, image, cover_image, created_at, updated_at FROM blog_posts ORDER BY created_at DESC LIMIT 30')
+      .catch(() => []);
+    const academy = await db
+      .all('SELECT id, slug, title, category, summary, cover_image, created_at, updated_at FROM academy_posts WHERE is_published = 1 ORDER BY order_index ASC LIMIT 30')
+      .catch(() => []);
+
+    const items: string[] = [];
+
+    for (const p of posts || []) {
+      const url = `${origin}/blog/${p.slug || p.id}`;
+      const rawImg = p.image || p.cover_image;
+      const imgUrl =
+        rawImg && typeof rawImg === 'string' && !rawImg.includes('unsplash.com')
+          ? rawImg.startsWith('http')
+            ? rawImg
+            : `${origin}${rawImg.startsWith('/') ? '' : '/'}${rawImg}`
+          : `${origin}/og-banner.png`;
+      const mimeType = imgUrl.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+      items.push(`    <item>
+      <title>${escapeXmlAsset(p.title || 'Статья ИИ Ревизор')}</title>
+      <link>${escapeXmlAsset(url)}</link>
+      <guid isPermaLink="true">${escapeXmlAsset(url)}</guid>
+      <pubDate>${toSafeRfc822(p.updated_at || p.created_at)}</pubDate>
+      <category>${escapeXmlAsset(p.category || 'Блог ИИ Ревизор')}</category>
+      <description>${escapeXmlAsset(p.summary || p.title || '')}</description>
+      <enclosure url="${escapeXmlAsset(imgUrl)}" type="${mimeType}" length="0"/>
+    </item>`);
+    }
+
+    for (const a of academy || []) {
+      const url = `${origin}/academy/${a.slug || a.id}`;
+      const imgUrl =
+        a.cover_image && typeof a.cover_image === 'string'
+          ? a.cover_image.startsWith('http')
+            ? a.cover_image
+            : `${origin}${a.cover_image.startsWith('/') ? '' : '/'}${a.cover_image}`
+          : `${origin}/og-banner.png`;
+      const mimeType = imgUrl.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+      items.push(`    <item>
+      <title>${escapeXmlAsset(a.title || 'Инструкция Академии')}</title>
+      <link>${escapeXmlAsset(url)}</link>
+      <guid isPermaLink="true">${escapeXmlAsset(url)}</guid>
+      <pubDate>${toSafeRfc822(a.updated_at || a.created_at)}</pubDate>
+      <category>${escapeXmlAsset(`Академия: ${a.category || 'Регламенты'}`)}</category>
+      <description>${escapeXmlAsset(a.summary || a.title || '')}</description>
+      <enclosure url="${escapeXmlAsset(imgUrl)}" type="${mimeType}" length="0"/>
+    </item>`);
+    }
+
+    if (items.length === 0) {
+      items.push(`    <item>
+      <title>ИИ Ревизор &amp; ИИ Рапорт — Автопилот отчетов и контроля</title>
+      <link>${escapeXmlAsset(`${origin}/`)}</link>
+      <guid isPermaLink="true">${escapeXmlAsset(`${origin}/`)}</guid>
+      <pubDate>${new Date().toUTCString()}</pubDate>
+      <category>Платформа</category>
+      <description>Голосовые сменные отчеты, расчет мотивации и KPI, аудит задач и push-уведомления в Telegram и PWA.</description>
+      <enclosure url="${escapeXmlAsset(`${origin}/og-banner.png`)}" type="image/png" length="0"/>
+    </item>`);
+    }
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>ИИ Ревизор &amp; ИИ Рапорт — Блог и Академия</title>
+    <link>${escapeXmlAsset(`${origin}/`)}</link>
+    <atom:link href="${escapeXmlAsset(`${origin}/rss.xml`)}" rel="self" type="application/rss+xml"/>
+    <description>Экспертные статьи, руководства и регламенты по голосовым отчетам в Telegram, расчету мотивации и KPI, аудиту смет КС-2/КС-3 и ИИ-контролю проектов.</description>
+    <language>ru</language>
+    <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
+    <image>
+      <url>${escapeXmlAsset(`${origin}/favicon-192.png`)}</url>
+      <title>ИИ Ревизор &amp; ИИ Рапорт</title>
+      <link>${escapeXmlAsset(`${origin}/`)}</link>
+    </image>
+${items.join('\n')}
+  </channel>
+</rss>`;
+
+    res.setHeader('Content-Type', 'application/rss+xml; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.send(xml);
+  } catch (err: any) {
+    res.status(500).setHeader('Content-Type', 'text/plain; charset=utf-8').send(`RSS generation error: ${err.message}`);
+  }
 }
 
 function stripMarkdown(md: string, maxLen = 1800): string {

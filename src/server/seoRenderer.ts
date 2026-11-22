@@ -264,8 +264,12 @@ export async function handleRobotsTxt(req: Request, res: Response): Promise<void
     'Allow: /file/',
     'Allow: /llms.txt',
     'Allow: /llms-full.txt',
+    'Allow: /rss.xml',
     'Allow: /favicon.ico',
     'Allow: /site.webmanifest',
+    'Allow: /yandex-tableau.json',
+    'Allow: /browserconfig.xml',
+    'Allow: /og-banner.png',
     'Disallow: /cabinet/',
     'Disallow: /system-admin/',
     'Disallow: /api/',
@@ -279,6 +283,8 @@ export async function handleRobotsTxt(req: Request, res: Response): Promise<void
     'Allow: /academy/',
     'Allow: /oferta',
     'Allow: /favicon.ico',
+    'Allow: /rss.xml',
+    'Allow: /yandex-tableau.json',
     'Disallow: /cabinet/',
     'Disallow: /system-admin/',
     'Disallow: /api/',
@@ -378,10 +384,15 @@ export async function handleSitemapXml(req: Request, res: Response, getDb: () =>
     }
   </url>`);
 
+    const safeIsoDate = (rawVal: any): string => {
+      if (!rawVal) return today;
+      const dt = new Date(rawVal);
+      return Number.isNaN(dt.getTime()) ? today : dt.toISOString().split('T')[0];
+    };
+
     for (const p of blogPosts || []) {
       const slugOrId = p.slug || p.id;
-      const lastmodRaw = p.updated_at || p.created_at;
-      const lastmod = lastmodRaw ? new Date(lastmodRaw).toISOString().split('T')[0] : today;
+      const lastmod = safeIsoDate(p.updated_at || p.created_at);
       const absImg = toAbsoluteUrl(p.image || p.cover_image, origin);
       urlNodes.push(`  <url>
     <loc>${escapeXml(`${origin}/blog/${slugOrId}`)}</loc>
@@ -397,8 +408,7 @@ export async function handleSitemapXml(req: Request, res: Response, getDb: () =>
 
     for (const a of academyPosts || []) {
       const slugOrId = a.slug || a.id;
-      const lastmodRaw = a.updated_at || a.created_at;
-      const lastmod = lastmodRaw ? new Date(lastmodRaw).toISOString().split('T')[0] : today;
+      const lastmod = safeIsoDate(a.updated_at || a.created_at);
       const absImg = a.cover_image ? toAbsoluteUrl(a.cover_image, origin) : '';
       urlNodes.push(`  <url>
     <loc>${escapeXml(`${origin}/academy/${slugOrId}`)}</loc>
@@ -502,12 +512,62 @@ export function createSeoSsrMiddleware(getDb: () => Promise<PgDbAdapter>) {
       const db = await getDb();
       const cleanPath = req.path.replace(/\/$/, '') || '/';
 
+      const metrikaRawEnv = [
+        process.env.YANDEX_METRIKA_IDS,
+        process.env.YANDEX_METRIKA_ID,
+        process.env.VITE_YANDEX_METRIKA_IDS,
+        process.env.VITE_YANDEX_METRIKA_ID,
+      ].filter(Boolean).join(',');
+      const metrikaRow = await db
+        .get("SELECT value FROM system_settings WHERE key = 'yandex_metrika_ids'")
+        .catch(() => null);
+      const metrikaIds = Array.from(
+        new Set(
+          `${metrikaRawEnv},${metrikaRow?.value || ''}`
+            .split(/[\s,;]+/)
+            .map((v) => v.trim())
+            .filter((v) => /^\d{5,12}$/.test(v))
+        )
+      );
+
+      const injectMetrika = (htmlDoc: string): string => {
+        if (!metrikaIds.length) return htmlDoc;
+        const initCalls = metrikaIds
+          .map(
+            (id) =>
+              `ym(${id}, "init", { clickmap:true, trackLinks:true, accurateTrackBounce:true, webvisor:true });\n` +
+              `window.__rrMetrikaInitialized.add(${id});`
+          )
+          .join('\n');
+        const headScript = `<!-- Yandex.Metrika counter -->
+<script type="text/javascript">
+  window.__rrMetrikaInitialized = window.__rrMetrikaInitialized || new Set();
+  (function(m,e,t,r,i,k,a){m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};
+  m[i].l=1*new Date();
+  for (var j = 0; j < document.scripts.length; j++) {if (document.scripts[j].src === r) { return; }}
+  k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)})
+  (window, document, "script", "https://mc.yandex.ru/metrika/tag.js", "ym");
+  ${initCalls}
+</script>
+<!-- /Yandex.Metrika counter -->`;
+        const noscriptImgs = metrikaIds
+          .map(
+            (id) =>
+              `<noscript><div><img src="https://mc.yandex.ru/watch/${id}" style="position:absolute; left:-9999px;" alt="" /></div></noscript>`
+          )
+          .join('\n');
+        return htmlDoc
+          .replace('</head>', `${headScript}\n</head>`)
+          .replace('</body>', `${noscriptImgs}\n</body>`);
+      };
+
       const renderSemanticOrPass = (htmlWithMeta: string, semanticBody: string) => {
+        const finalHtml = injectMetrika(htmlWithMeta);
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
         if (isBot || isSsrTest) {
-          return res.send(htmlWithMeta.replace('<div id="root"></div>', `<div id="root">${semanticBody}</div>`));
+          return res.send(finalHtml.replace('<div id="root"></div>', `<div id="root">${semanticBody}</div>`));
         }
-        return res.send(htmlWithMeta);
+        return res.send(finalHtml);
       };
 
       if (cleanPath.startsWith('/blog')) {
